@@ -92,3 +92,47 @@ class OriginApp(BaseEnum):
     PROJECTS = 'projects', 'Projects'
     DIGITAL = 'digital', 'Digital'
     LEADS = 'leads', 'Leads'
+
+
+class LeadStatus(BaseEnum):
+    NEW = 'new', 'New'
+    INTERESTED = 'interested', 'Interested'
+    FOLLOW_UP = 'follow_up', 'Follow-up Scheduled'
+    QUOTE_SENT = 'quote_sent', 'Quote Sent'
+    CLOSED_SUBSCRIBED = 'closed_subscribed', 'Closed – Subscribed'
+    CLOSED_LOST = 'closed_lost', 'Closed – Lost'
+    ON_HOLD = 'on_hold', 'On Hold'
+
+
+class VisitOutcome(BaseEnum):
+    NO_ANSWER = 'no_answer', 'No Answer'
+    REFUSAL = 'refusal', 'Refusal'
+    INTERESTED = 'interested', 'Interested'
+    COMPLETED = 'completed', 'GPB Setup Completed'
+    SALE_CLOSED = 'sale_closed', 'Sale Closed'
+    OTHER = 'other', 'Other'
+
+
+class FollowUpType(BaseEnum):
+    CALL = 'call', 'Call'
+    DEMO = 'demo', 'Demo'
+    MEETING = 'meeting', 'Meeting'
+    INSTALL = 'install', 'Install'
+    CHECKIN = 'checkin', 'Check-In'
+
+
+class LeadStage(BaseEnum):
+    PROSPECT = 'prospect', 'Prospect'
+    QUALIFIED = 'qualified', 'Qualified'
+    NEGOTIATION = 'negotiation', 'Negotiation'
+    WON = 'won', 'Won'
+    LOST = 'lost', 'Lost'
+
+
+class LeadSource(BaseEnum):
+    FIELD = 'field', 'Field Visit'
+    REFERRAL = 'referral', 'Referral'
+    DIGITAL = 'digital', 'Digital'
+    INBOUND = 'inbound', 'Inbound'
+    OTHER = 'other', 'Other'
+
