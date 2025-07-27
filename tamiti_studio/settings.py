@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     'common',
     'tasks',
     'projects',
+    'finance'
 ]
 
 MIDDLEWARE = [
