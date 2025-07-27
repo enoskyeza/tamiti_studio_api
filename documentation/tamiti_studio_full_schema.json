@@ -1,0 +1,178 @@
+{
+  "accounts": {
+    "User": {
+      "id": "UUID",
+      "username": "string",
+      "email": "string",
+      "role": "enum (admin, manager, staff, viewer)",
+      "profile_pic": "URL"
+    }
+  },
+  "tasks": {
+    "Task": {
+      "id": "UUID",
+      "title": "string",
+      "description": "text",
+      "status": "enum (todo, in_progress, done)",
+      "priority": "enum (low, medium, high)",
+      "origin_app": "string",
+      "related_project": "FK: projects.Project",
+      "assigned_to": "FK: accounts.User",
+      "due_date": "date",
+      "tags": "list of strings",
+      "created_by": "FK: accounts.User"
+    }
+  },
+  "media": {
+    "MediaAsset": {
+      "id": "UUID",
+      "title": "string",
+      "file": "URL",
+      "type": "enum (image, video, doc)",
+      "tags": "list of strings",
+      "uploaded_by": "FK: accounts.User",
+      "visibility": "enum (public, internal, field, client)",
+      "created_at": "datetime"
+    }
+  },
+  "projects": {
+    "Project": {
+      "id": "UUID",
+      "name": "string",
+      "client_name": "string",
+      "status": "enum (planning, active, review, complete)",
+      "start_date": "date",
+      "due_date": "date",
+      "team": "list of FK: accounts.User"
+    }
+  },
+  "finance": {
+    "Transaction": {
+      "id": "UUID",
+      "type": "enum (income, expense)",
+      "amount": "decimal",
+      "category": "string",
+      "description": "text",
+      "date": "date",
+      "staff": "FK: accounts.User",
+      "status": "enum (approved, pending, rejected)",
+      "attachment": "FK: media.MediaAsset"
+    },
+    "Requisition": {
+      "id": "UUID",
+      "amount": "decimal",
+      "purpose": "text",
+      "department": "string",
+      "requested_by": "FK: accounts.User",
+      "status": "enum (pending, approved, rejected)",
+      "urgency": "enum (low, medium, high)",
+      "date": "datetime",
+      "comments": "text"
+    },
+    "Goal": {
+      "id": "UUID",
+      "title": "string",
+      "target": "decimal",
+      "current": "decimal",
+      "deadline": "date",
+      "category": "string",
+      "description": "text",
+      "milestones": "list of decimal"
+    },
+    "Debtor": {
+      "id": "UUID",
+      "client_name": "string",
+      "contact_email": "email",
+      "contact_phone": "string",
+      "original_amount": "decimal",
+      "remaining_balance": "decimal",
+      "due_date": "date",
+      "status": "enum (active, overdue, paid)",
+      "payment_history": "list of FK: finance.PaymentRecord"
+    },
+    "Creditor": {
+      "id": "UUID",
+      "vendor_name": "string",
+      "contact_email": "email",
+      "contact_phone": "string",
+      "original_amount": "decimal",
+      "remaining_balance": "decimal",
+      "due_date": "date",
+      "status": "enum (active, overdue, paid)",
+      "payment_history": "list of FK: finance.PaymentRecord"
+    },
+    "PaymentRecord": {
+      "id": "UUID",
+      "amount": "decimal",
+      "payment_date": "date",
+      "payment_method": "enum (cash, bank_transfer, mobile_money, check)",
+      "notes": "text",
+      "processed_by": "FK: accounts.User"
+    }
+  },
+  "digital": {
+    "ScheduledPost": {
+      "id": "UUID",
+      "caption": "string",
+      "platform": "enum (facebook, instagram, linkedin, whatsapp)",
+      "status": "enum (draft, scheduled, posted)",
+      "scheduled_for": "datetime",
+      "media_assets": "list of FK: media.MediaAsset"
+    },
+    "Campaign": {
+      "id": "UUID",
+      "title": "string",
+      "start_date": "date",
+      "end_date": "date",
+      "description": "text",
+      "kpis": "list of strings"
+    }
+  },
+  "content": {
+    "GalleryItem": {
+      "id": "UUID",
+      "title": "string",
+      "media": "FK: media.MediaAsset",
+      "used_in": "list of FK: digital.ScheduledPost or digital.Campaign"
+    }
+  },
+  "field": {
+    "Lead": {
+      "id": "UUID",
+      "name": "string",
+      "business_type": "string",
+      "location": "string",
+      "contact": "string",
+      "status": "enum (new, contacted, converted)",
+      "follow_up_task": "FK: tasks.Task"
+    }
+  },
+  "chat": {
+    "VirtualStaff": {
+      "id": "UUID",
+      "name": "string",
+      "department": "string",
+      "avatar_url": "URL",
+      "persona_prompt": "text"
+    },
+    "ChatMessage": {
+      "id": "UUID",
+      "sender": "FK: accounts.User",
+      "staff": "FK: chat.VirtualStaff",
+      "content": "text",
+      "timestamp": "datetime",
+      "conversation_type": "enum (summary, brainstorm, casual)"
+    }
+  },
+  "notifications": {
+    "Notification": {
+      "id": "UUID",
+      "user": "FK: accounts.User",
+      "content": "text",
+      "related_task": "FK: tasks.Task",
+      "read": "boolean",
+      "timestamp": "datetime",
+      "level": "enum (info, alert, critical)"
+    }
+  }
+}
