@@ -42,9 +42,15 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt',
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
+    'taggit',
+    'django_filters',
+
     'core',
     'users',
     'accounts',
+    'common',
+    'tasks',
+    'projects',
 ]
 
 MIDDLEWARE = [
@@ -142,6 +148,11 @@ SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=15),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
     'AUTH_HEADER_TYPES': ('Bearer',),
+
+    'DEFAULT_PAGINATION_CLASS': 'common.pagination.DefaultPagination',
+    'PAGE_SIZE': 10,
+    'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
+
 }
 
 # Security
