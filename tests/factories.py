@@ -1,10 +1,16 @@
 # tests/factories.py
+from django.utils import timezone
+
 import factory
 from users.models import User
 from factory.django import DjangoModelFactory
 from projects.models import Project, Milestone, ProjectComment
 from tasks.models import Task, TaskGroup
-from common.enums import ProjectStatus,  PriorityLevel
+from common.enums import *
+
+from finance.models import (
+    Party, Account, Invoice, Payment, Transaction, Goal, GoalMilestone, Requisition
+)
 
 class UserFactory(factory.django.DjangoModelFactory):
     class Meta:
@@ -67,3 +73,91 @@ class ProjectCommentFactory(DjangoModelFactory):
     user = factory.SubFactory(UserFactory)
     content = "This is a comment"
 
+class PartyFactory(DjangoModelFactory):
+    class Meta:
+        model = Party
+
+    name = factory.Faker('company')
+    email = factory.Faker('email')
+    phone = factory.Faker('phone_number')
+    type = PartyType.CLIENT
+
+
+class AccountFactory(DjangoModelFactory):
+    class Meta:
+        model = Account
+
+    name = factory.Faker('company')
+    number = factory.Faker('bank_account')
+    type = AccountType.BANK
+    balance = 100000
+    currency = Currency.USD
+
+
+class InvoiceFactory(DjangoModelFactory):
+    class Meta:
+        model = Invoice
+
+    party = factory.SubFactory(PartyFactory)
+    direction = InvoiceDirection.OUTGOING
+    total_amount = 500000
+    description = factory.Faker('sentence')
+    issued_date = factory.LazyFunction(timezone.now)
+    due_date = factory.LazyFunction(lambda: timezone.now().date())
+
+
+class RequisitionFactory(DjangoModelFactory):
+    class Meta:
+        model = Requisition
+
+    requested_by = factory.SubFactory(UserFactory)
+    approved_by = factory.SubFactory(UserFactory)
+    urgency = PriorityLevel.MEDIUM
+    status = 'approved'
+    amount = 200000
+    purpose = factory.Faker('sentence')
+    comments = ''
+
+
+class GoalFactory(DjangoModelFactory):
+    class Meta:
+        model = Goal
+
+    title = factory.Faker('sentence')
+    target_amount = 1000000
+    current_amount = 0
+    due_date = factory.LazyFunction(lambda: timezone.now().date())
+    owner = factory.SubFactory(UserFactory)
+
+
+class GoalMilestoneFactory(DjangoModelFactory):
+    class Meta:
+        model = GoalMilestone
+
+    goal = factory.SubFactory(GoalFactory)
+    amount = 250000
+
+
+class TransactionFactory(DjangoModelFactory):
+    class Meta:
+        model = Transaction
+
+    type = TransactionType.EXPENSE
+    amount = 100000
+    account = factory.SubFactory(AccountFactory)
+    date = factory.LazyFunction(timezone.now)
+    is_automated = True
+
+
+class PaymentFactory(DjangoModelFactory):
+    class Meta:
+        model = Payment
+
+    direction = 'outgoing'
+    amount = 100000
+    party = factory.SubFactory(PartyFactory)
+    invoice = factory.SubFactory(InvoiceFactory)
+    requisition = factory.SubFactory(RequisitionFactory)
+    account = factory.SubFactory(AccountFactory)
+    goal = factory.SubFactory(GoalFactory)
+    notes = factory.Faker('sentence')
