@@ -1,0 +1,94 @@
+from django.contrib import admin
+from finance.models import (
+    Party, Account, Invoice, Payment, Transaction,
+    Goal, GoalMilestone, Requisition
+)
+
+
+class GoalMilestoneInline(admin.TabularInline):
+    model = GoalMilestone
+    extra = 1
+
+
+@admin.register(Party)
+class PartyAdmin(admin.ModelAdmin):
+    list_display = ('name', 'type', 'email', 'phone', 'is_internal_user', 'linked_user')
+    search_fields = ('name', 'email', 'phone')
+    list_filter = ('type', 'is_internal_user')
+
+    def linked_user(self, obj):
+        if obj.user:
+            return admin.utils.format_html('<a href="/admin/users/user/{}/change/">{}</a>', obj.user.id, obj.user.username)
+        return '-'
+    linked_user.short_description = 'User'
+
+
+@admin.register(Account)
+class AccountAdmin(admin.ModelAdmin):
+    list_display = ('name', 'number', 'type', 'balance', 'currency')
+    search_fields = ('name', 'number')
+    list_filter = ('type', 'currency')
+
+
+@admin.register(Invoice)
+class InvoiceAdmin(admin.ModelAdmin):
+    list_display = ('id', 'party_link', 'direction', 'total_amount', 'issued_date', 'due_date', 'is_paid')
+    list_filter = ('direction', 'is_paid')
+    search_fields = ('party__name', 'description')
+    date_hierarchy = 'issued_date'
+    autocomplete_fields = ('party',)
+
+    def party_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/party/{}/change/">{}</a>', obj.party.id, obj.party.name)
+    party_link.short_description = 'Party'
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'direction', 'amount', 'party_link', 'account', 'invoice_link', 'requisition_link', 'goal')
+    list_filter = ('direction', 'goal')
+    search_fields = ('party__name', 'notes')
+    autocomplete_fields = ('party', 'account', 'invoice', 'requisition', 'goal')
+
+    def party_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/party/{}/change/">{}</a>', obj.party.id, obj.party.name)
+
+    def invoice_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/invoice/{}/change/">Invoice #{}</a>', obj.invoice.id, obj.invoice.id) if obj.invoice else '-'
+
+    def requisition_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/requisition/{}/change/">Requisition #{}</a>', obj.requisition.id, obj.requisition.id) if obj.requisition else '-'
+
+    party_link.short_description = 'Party'
+    invoice_link.short_description = 'Invoice'
+    requisition_link.short_description = 'Requisition'
+
+
+@admin.register(Transaction)
+class TransactionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'type', 'amount', 'account', 'date', 'is_automated', 'payment_link')
+    list_filter = ('type', 'is_automated')
+    search_fields = ('description',)
+    date_hierarchy = 'date'
+    autocomplete_fields = ('account', 'related_invoice', 'related_payment', 'related_requisition')
+
+    def payment_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/payment/{}/change/">Payment #{}</a>', obj.related_payment.id, obj.related_payment.id) if obj.related_payment else '-'
+    payment_link.short_description = 'Payment'
+
+
+@admin.register(Goal)
+class GoalAdmin(admin.ModelAdmin):
+    list_display = ('title', 'owner', 'target_amount', 'current_amount', 'due_date')
+    search_fields = ('title', 'owner__username')
+    list_filter = ('due_date',)
+    autocomplete_fields = ('owner',)
+    inlines = [GoalMilestoneInline]
+
+
+@admin.register(Requisition)
+class RequisitionAdmin(admin.ModelAdmin):
+    list_display = ('id', 'requested_by', 'approved_by', 'urgency', 'status', 'amount')
+    list_filter = ('status', 'urgency')
+    search_fields = ('purpose', 'comments')
+    autocomplete_fields = ('requested_by', 'approved_by')
