@@ -6,6 +6,7 @@ from users.models import User
 from factory.django import DjangoModelFactory
 from projects.models import Project, Milestone, ProjectComment
 from tasks.models import Task, TaskGroup
+from field.models import Zone, Lead, Visit, LeadAction
 from common.enums import *
 
 from finance.models import (
@@ -72,6 +73,7 @@ class ProjectCommentFactory(DjangoModelFactory):
     project = factory.SubFactory(ProjectFactory)
     user = factory.SubFactory(UserFactory)
     content = "This is a comment"
+
 
 class PartyFactory(DjangoModelFactory):
     class Meta:
@@ -161,3 +163,54 @@ class PaymentFactory(DjangoModelFactory):
     account = factory.SubFactory(AccountFactory)
     goal = factory.SubFactory(GoalFactory)
     notes = factory.Faker('sentence')
+
+class ZoneFactory(DjangoModelFactory):
+    class Meta:
+        model = Zone
+
+    name = factory.Sequence(lambda n: f'Zone {n}')
+    region = "Central"
+    created_by = factory.SubFactory(UserFactory)
+
+
+class LeadFactory(DjangoModelFactory):
+    class Meta:
+        model = Lead
+
+    business_name = factory.Sequence(lambda n: f'Biz {n}')
+    contact_name = "John Doe"
+    contact_phone = "0770000000"
+    contact_email = factory.LazyAttribute(lambda o: f"{o.business_name.lower().replace(' ', '')}@example.com")
+    stage = LeadStage.PROSPECT
+    source = LeadSource.FIELD
+    zone = factory.SubFactory(ZoneFactory)
+    assigned_rep = factory.SubFactory(UserFactory)
+    priority = PriorityLevel.MEDIUM
+    products_discussed = ["Website", "App"]
+
+
+class VisitFactory(DjangoModelFactory):
+    class Meta:
+        model = Visit
+
+    rep = factory.SubFactory(UserFactory)
+    zone = factory.SubFactory(ZoneFactory)
+    date_time = factory.LazyFunction(timezone.now)
+    business_name = factory.Sequence(lambda n: f'BizVisit {n}')
+    contact_name = "Jane Contact"
+    contact_phone = "0788888888"
+    products_discussed = ["Hosting", "Training"]
+    location = "Kampala"
+    add_as_lead = True
+
+
+class LeadActionFactory(DjangoModelFactory):
+    class Meta:
+        model = LeadAction
+
+    lead = factory.SubFactory(LeadFactory)
+    type = FollowUpType.CALL
+    date = factory.LazyFunction(timezone.now)
+    created_by = factory.SubFactory(UserFactory)
+    outcome = "Reached out"
+

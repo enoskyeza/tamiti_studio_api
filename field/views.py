@@ -1,3 +1,53 @@
-from django.shortcuts import render
+from rest_framework import viewsets, permissions, filters
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from django.utils import timezone
+from field.models import Zone, Lead, Visit, LeadAction
+from field.serializers import ZoneSerializer, LeadSerializer, VisitSerializer, LeadActionSerializer
 
-# Create your views here.
+
+class ZoneViewSet(viewsets.ModelViewSet):
+    queryset = Zone.objects.all()
+    serializer_class = ZoneSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['name', 'region']
+
+
+class LeadViewSet(viewsets.ModelViewSet):
+    queryset = Lead.objects.select_related('assigned_rep', 'zone').prefetch_related('actions').all()
+    serializer_class = LeadSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['business_name', 'contact_name', 'contact_phone']
+    ordering_fields = ['lead_score', 'priority', 'follow_up_date']
+
+    @action(detail=False, methods=['get'])
+    def hot(self, request):
+        queryset = self.get_queryset().filter(priority__in=['high', 'critical'])
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class VisitViewSet(viewsets.ModelViewSet):
+    queryset = Visit.objects.select_related('rep', 'zone', 'linked_lead').all()
+    serializer_class = VisitSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['business_name', 'contact_name', 'contact_phone', 'location']
+    ordering_fields = ['date_time']
+
+    @action(detail=True, methods=['post'])
+    def convert_to_lead(self, request, pk=None):
+        visit = self.get_object()
+        lead = visit.convert_to_lead()
+        return Response({"lead_id": lead.id if lead else None, "linked": bool(lead)})
+
+
+class LeadActionViewSet(viewsets.ModelViewSet):
+    queryset = LeadAction.objects.select_related('lead', 'created_by')
+    serializer_class = LeadActionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)

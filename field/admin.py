@@ -27,6 +27,17 @@ class LeadAdmin(admin.ModelAdmin):
     readonly_fields = ("lead_score",)
 
 
+@admin.action(description="Convert selected visits to leads")
+def convert_selected_visits(modeladmin, request, queryset):
+    count = 0
+    for visit in queryset:
+        if visit.add_as_lead and not visit.linked_lead:
+            lead = visit.convert_to_lead()
+            if lead:
+                count += 1
+    modeladmin.message_user(request, f"{count} visit(s) converted to leads.")
+
+
 @admin.register(Visit)
 class VisitAdmin(admin.ModelAdmin):
     list_display = (
