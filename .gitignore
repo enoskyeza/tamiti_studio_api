@@ -87,3 +87,4 @@ target/
 *.pyc
 local_settings.py
 .env
+backup.env
