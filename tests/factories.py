@@ -2,17 +2,17 @@
 from django.utils import timezone
 
 import factory
+
 from users.models import User
 from factory.django import DjangoModelFactory
 from projects.models import Project, Milestone, ProjectComment
 from tasks.models import Task, TaskGroup
 from field.models import Zone, Lead, Visit, LeadAction
 from common.enums import *
-
+from social.models import SocialPost, PostComment, SocialMetric, SocialPlatformProfile
 from finance.models import (
     Party, Account, Invoice, Payment, Transaction, Goal, GoalMilestone, Requisition
 )
-
 from chatrooms.models import (
     Channel, ChannelMessage, ChannelMember,
     DirectThread, DirectMessage
@@ -265,3 +265,44 @@ class DirectMessageFactory(DjangoModelFactory):
     sender = factory.SubFactory(UserFactory)
     content = factory.Faker("sentence")
     timestamp = factory.LazyFunction(timezone.now)
+
+
+class SocialPostFactory(DjangoModelFactory):
+    class Meta:
+        model = SocialPost
+
+    title = factory.Faker("sentence")
+    content_text = factory.Faker("paragraph")
+    platform = "facebook"
+    scheduled_for = factory.LazyFunction(timezone.now)
+    status = "draft"
+    assigned_to = factory.SubFactory(UserFactory)
+
+
+class PostCommentFactory(DjangoModelFactory):
+    class Meta:
+        model = PostComment
+
+    post = factory.SubFactory(SocialPostFactory)
+    author = factory.SubFactory(UserFactory)
+    content = factory.Faker("sentence")
+
+
+class SocialMetricFactory(DjangoModelFactory):
+    class Meta:
+        model = SocialMetric
+
+    post = factory.SubFactory(SocialPostFactory)
+    likes = 10
+    shares = 5
+    comments = 3
+    views = 100
+
+
+class SocialPlatformProfileFactory(DjangoModelFactory):
+    class Meta:
+        model = SocialPlatformProfile
+
+    platform = "facebook"
+    followers = 1000
+    posts_made = 20
