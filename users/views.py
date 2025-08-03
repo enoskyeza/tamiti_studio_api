@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework.views import APIView
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from users.serializers import RegisterSerializer, LoginSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
 from users.tokens import account_activation_token, decode_uid
@@ -41,6 +42,18 @@ class LoginView(generics.GenericAPIView):
 
 
 class VerifyEmailView(APIView):
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name="uid", type=str, location=OpenApiParameter.QUERY),
+            OpenApiParameter(name="token", type=str, location=OpenApiParameter.QUERY),
+        ],
+        responses={
+            200: OpenApiResponse(description="Email verified successfully"),
+            400: OpenApiResponse(description="Invalid link or token"),
+            404: OpenApiResponse(description="Invalid user"),
+        },
+    )
     def get(self, request):
         uid = decode_uid(request.GET.get('uid'))
         token = request.GET.get('token')
