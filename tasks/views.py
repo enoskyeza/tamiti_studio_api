@@ -3,12 +3,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 
 from tasks.filters import TaskFilter
 from tasks.models import Task
 from tasks.serializers import (
     TaskSerializer, TaskCreateSerializer, TaskUpdateSerializer,
-    TaskGroupSerializer
+    TaskGroupSerializer, TaskToggleSerializer
 )
 
 
@@ -42,6 +43,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Task.objects.filter(project__created_by=self.request.user)
 
 
+@extend_schema(response=TaskToggleSerializer)
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_task_completion(request, task_id):
