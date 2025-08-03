@@ -124,6 +124,18 @@ SPECTACULAR_SETTINGS = {
     'DESCRIPTION': 'API documentation for all Tamiti Studio backend services.',
     'VERSION': '1.0.0',
     'SERVE_INCLUDE_SCHEMA': False,
+    'ENUM_NAME_OVERRIDES': {
+        'TaskStatus': 'common.enums.TaskStatus',
+        'ProjectStatus': 'common.enums.ProjectStatus',
+        'PostStatus': 'common.enums.PostStatus',
+        'PartyType': 'common.enums.PartyType',
+        'AccountType': 'common.enums.AccountType',
+        'TransactionType': 'common.enums.TransactionType',
+        'ChannelType': 'common.enums.ChannelType',
+        'FollowUpType': 'common.enums.FollowUpType',
+        'ProjectRole': 'common.enums.ProjectRole',
+        'UserRole': 'users.models.User.Role',
+    },
 }
 
 SIMPLE_JWT = {
