@@ -45,6 +45,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'taggit',
     'django_filters',
+    'drf_spectacular',
+    "debug_toolbar",
 
     'core',
     'users',
@@ -63,12 +65,17 @@ INSTALLED_APPS = [
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
+    "debug_toolbar.middleware.DebugToolbarMiddleware",
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'corsheaders.middleware.CorsMiddleware'
+]
+
+INTERNAL_IPS = [
+    "127.0.0.1",
 ]
 
 CORS_ALLOW_ALL_ORIGINS = DEBUG
@@ -144,6 +151,18 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # 'DEFAULT_PAGINATION_CLASS': 'common.pagination.DefaultPagination',
+    # 'PAGE_SIZE': 10,
+    # 'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
+}
+
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Tamiti Studio API',
+    'DESCRIPTION': 'API documentation for all Tamiti Studio backend services.',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
 }
 
 SIMPLE_JWT = {

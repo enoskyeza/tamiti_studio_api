@@ -1,10 +1,10 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from content.views_content import MediaItemViewSet, MediaCategoryViewSet
+from content.views import MediaAssetViewSet, MediaCategoryViewSet
 
 router = DefaultRouter()
 router.register(r'categories', MediaCategoryViewSet)
-router.register(r'media', MediaItemViewSet)
+router.register(r'media', MediaAssetViewSet)
 
 urlpatterns = [
     path('', include(router.urls)),
