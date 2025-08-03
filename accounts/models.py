@@ -25,7 +25,7 @@ class Branch(models.Model):
 
 
 class Referral(models.Model):
-    code = models.CharField(max_length=50)
+    code = models.CharField(max_length=50, unique=True)
     referrer = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='referrals')
 
 

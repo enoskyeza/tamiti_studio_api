@@ -1,6 +1,11 @@
+import logging
 import openai
+from openai.error import OpenAIError
 from django.conf import settings
 from .models import VACommand, AssistantLog, DefaultResponse
+
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_va_command(assistant, user_input, user=None):
@@ -35,7 +40,8 @@ def generate_gpt_response(assistant, user_input):
             temperature=0.7,
         )
         return response.choices[0].message.content
-    except Exception:
+    except OpenAIError as exc:
+        logger.exception("OpenAI request failed", exc_info=exc)
         return get_default_response(assistant)
 
 

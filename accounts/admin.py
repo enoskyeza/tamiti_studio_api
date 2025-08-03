@@ -5,6 +5,7 @@ from .models import (
     StaffProfile, CustomerProfile,
     Department, Designation, Referral, Branch, StaffRole
 )
+from .forms import ReferralForm
 
 
 @admin.register(StaffProfile)
@@ -34,6 +35,7 @@ class CustomerProfileAdmin(admin.ModelAdmin):
 class ReferralAdmin(admin.ModelAdmin):
     list_display = ('code', 'referrer')
     search_fields = ('code', 'referrer__username')
+    form = ReferralForm
 
 
 @admin.register(StaffRole)
