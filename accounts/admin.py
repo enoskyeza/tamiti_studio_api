@@ -3,7 +3,7 @@
 from django.contrib import admin
 from .models import (
     StaffProfile, CustomerProfile,
-    Department, Designation, Referral, Branch
+    Department, Designation, Referral, Branch, StaffRole
 )
 
 @admin.register(StaffProfile)
@@ -22,6 +22,13 @@ class CustomerProfileAdmin(admin.ModelAdmin):
 class ReferralAdmin(admin.ModelAdmin):
     list_display = ('code', 'referrer')
     search_fields = ('code', 'referrer__username')
+
+
+@admin.register(StaffRole)
+class StaffRoleAdmin(admin.ModelAdmin):
+    list_display = ('title', 'is_virtual')
+    search_fields = ('title',)
+    filter_horizontal = ('tags',)
 
 admin.site.register(Department)
 admin.site.register(Designation)

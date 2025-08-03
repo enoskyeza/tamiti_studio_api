@@ -1,6 +1,6 @@
 # accounts/models.py
 from django.db import models
-from users.models import User
+from users.models import User, Tag
 from core.models import BaseModel
 
 class Department(models.Model):
@@ -23,9 +23,22 @@ class Branch(models.Model):
     def __str__(self):
         return self.name
 
+
 class Referral(models.Model):
     code = models.CharField(max_length=50)
     referrer = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='referrals')
+
+
+class StaffRole(BaseModel):
+    title = models.CharField(max_length=100)
+    description = models.TextField(blank=True)
+    dashboard_url = models.URLField(blank=True, null=True)
+    tags = models.ManyToManyField(Tag, blank=True)
+    is_virtual = models.BooleanField(default=False)
+    prompt_context = models.TextField(blank=True, help_text="Optional instructions if used as virtual assistant")
+
+    def __str__(self):
+        return self.title
 
 
 class StaffProfile(BaseModel):
@@ -35,6 +48,7 @@ class StaffProfile(BaseModel):
     branch = models.ForeignKey(Branch, on_delete=models.SET_NULL, null=True)
     assigned_to = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='assigned_staff')
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_staff')
+    role = models.ForeignKey('StaffRole', on_delete=models.SET_NULL, null=True, blank=True)
 
 
 class CustomerProfile(BaseModel):
