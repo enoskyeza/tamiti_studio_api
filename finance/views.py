@@ -2,6 +2,8 @@ from rest_framework import viewsets, permissions, status, filters
 from rest_framework.response import Response
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
+from django_filters import rest_framework as df_filters
+from django.db import models as dj_models
 from django.utils import timezone
 from finance.models import *
 from finance.serializers import *
@@ -12,7 +14,21 @@ class BaseModelViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     ordering_fields = '__all__'
     search_fields = '__all__'
-    filterset_fields = '__all__'
+
+    def get_filterset_class(self):
+        model = self.get_queryset().model
+
+        class AutoFilterSet(df_filters.FilterSet):
+            class Meta:
+                model = model
+                fields = '__all__'
+                filter_overrides = {
+                    dj_models.FileField: {
+                        'filter_class': df_filters.CharFilter,
+                    }
+                }
+
+        return AutoFilterSet
 
 
 class PartyViewSet(BaseModelViewSet):
