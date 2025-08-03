@@ -13,6 +13,12 @@ from finance.models import (
     Party, Account, Invoice, Payment, Transaction, Goal, GoalMilestone, Requisition
 )
 
+from chatrooms.models import (
+    Channel, ChannelMessage, ChannelMember,
+    DirectThread, DirectMessage
+)
+
+
 class UserFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = User
@@ -214,3 +220,48 @@ class LeadActionFactory(DjangoModelFactory):
     created_by = factory.SubFactory(UserFactory)
     outcome = "Reached out"
 
+
+class ChannelFactory(DjangoModelFactory):
+    class Meta:
+        model = Channel
+
+    name = factory.Sequence(lambda n: f"channel-{n}")
+    type = "public"
+    is_private = False
+    created_by = factory.SubFactory(UserFactory)
+
+
+class ChannelMemberFactory(DjangoModelFactory):
+    class Meta:
+        model = ChannelMember
+
+    channel = factory.SubFactory(ChannelFactory)
+    user = factory.SubFactory(UserFactory)
+
+
+class ChannelMessageFactory(DjangoModelFactory):
+    class Meta:
+        model = ChannelMessage
+
+    channel = factory.SubFactory(ChannelFactory)
+    sender = factory.SubFactory(UserFactory)
+    content = factory.Faker("sentence")
+    timestamp = factory.LazyFunction(timezone.now)
+
+
+class DirectThreadFactory(DjangoModelFactory):
+    class Meta:
+        model = DirectThread
+
+    user1 = factory.SubFactory(UserFactory)
+    user2 = factory.SubFactory(UserFactory)
+
+
+class DirectMessageFactory(DjangoModelFactory):
+    class Meta:
+        model = DirectMessage
+
+    thread = factory.SubFactory(DirectThreadFactory)
+    sender = factory.SubFactory(UserFactory)
+    content = factory.Faker("sentence")
+    timestamp = factory.LazyFunction(timezone.now)

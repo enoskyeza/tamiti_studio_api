@@ -136,3 +136,8 @@ class LeadSource(BaseEnum):
     INBOUND = 'inbound', 'Inbound'
     OTHER = 'other', 'Other'
 
+
+class ChannelType(BaseEnum):
+    PUBLIC = 'public', 'Public'
+    PRIVATE = 'private', 'Private'
+    DIRECT = 'direct', 'Direct Message'
