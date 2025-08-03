@@ -141,3 +141,20 @@ class ChannelType(BaseEnum):
     PUBLIC = 'public', 'Public'
     PRIVATE = 'private', 'Private'
     DIRECT = 'direct', 'Direct Message'
+
+
+class SocialPlatformType(BaseEnum):
+    FACEBOOK = "facebook", "Facebook"
+    INSTAGRAM = "instagram", "Instagram"
+    X = "x", "X (formerly Twitter)"
+    LINKEDIN = "linkedin", "LinkedIn"
+    TIKTOK = "tiktok", "TikTok"
+    YOUTUBE = "youtube", "YouTube"
+
+
+class PostStatus(BaseEnum):
+    DRAFT = "draft", "Draft"
+    UNDER_REVIEW = "under_review", "Under Review"
+    APPROVED = "approved", "Approved"
+    REJECTED = "rejected", "Rejected"
+    PUBLISHED = "published", "Published"

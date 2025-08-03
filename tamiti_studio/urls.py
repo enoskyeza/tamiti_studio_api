@@ -27,6 +27,7 @@ urlpatterns = [
     path('api/projects/', include('projects.urls')),
     path('api/finance/', include('finance.urls')),
     path('api/assistants/', include('assistants.urls')),
-    # path('api/accounts/', include('accounts.urls')),
+    path('api/accounts/', include('accounts.urls')),
+    path('api/social/', include('social.urls')),
 
 ]
