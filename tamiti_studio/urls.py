@@ -1,22 +1,8 @@
-"""
-URL configuration for tamiti_studio project.
+"""URL configuration for tamiti_studio project."""
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/5.1/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
-"""
-from django.contrib import admin
-from django.urls import path, include
 from django.conf import settings
+from django.contrib import admin
+from django.urls import include, path
 
 from drf_spectacular.views import (
     SpectacularAPIView,
@@ -24,30 +10,38 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 
+
+# Group all API endpoints under a versioned namespace
+api_v1_patterns = [
+    path('auth/', include('users.urls')),
+    path('chat/', include('chatrooms.urls')),
+    path('tasks/', include('tasks.urls')),
+    path('users/', include('users.urls')),
+    path('field/', include('field.urls')),
+    path('projects/', include('projects.urls')),
+    path('finance/', include('finance.urls')),
+    path('assistants/', include('assistants.urls')),
+    path('accounts/', include('accounts.urls')),
+    path('social/', include('social.urls')),
+    path('content/', include('content.urls')),
+]
+
+
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('api/auth/', include('users.urls')),
-    path('api/chat/', include('chatrooms.urls')),
-    path('api/tasks/', include('tasks.urls')),
-    path('api/users/', include('users.urls')),
-    path('api/field/', include('field.urls')),
-    path('api/projects/', include('projects.urls')),
-    path('api/finance/', include('finance.urls')),
-    path('api/assistants/', include('assistants.urls')),
-    path('api/accounts/', include('accounts.urls')),
-    path('api/social/', include('social.urls')),
-    path('api/content/', include('content.urls')),
+    path('api/v1/', include((api_v1_patterns, 'v1'), namespace='v1')),
 
-    # swagger endpoints
+    # Swagger / OpenAPI endpoints
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
     path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
-
 ]
 
-# debug too settings
+
 if settings.DEBUG:
     import debug_toolbar
+
     urlpatterns += [
-        path("__debug__/", include(debug_toolbar.urls)),
+        path('__debug__/', include(debug_toolbar.urls)),
     ]
+
