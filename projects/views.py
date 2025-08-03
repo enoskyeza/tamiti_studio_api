@@ -20,6 +20,8 @@ class ProjectListCreateView(generics.ListCreateAPIView):
         return ProjectSummarySerializer if self.request.method == 'GET' else ProjectSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Project.objects.none()
         qs = Project.objects.filter(created_by=self.request.user)
         if status := self.request.query_params.get('status'):
             qs = qs.filter(status=status)
