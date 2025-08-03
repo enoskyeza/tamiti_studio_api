@@ -158,3 +158,11 @@ class PostStatus(BaseEnum):
     APPROVED = "approved", "Approved"
     REJECTED = "rejected", "Rejected"
     PUBLISHED = "published", "Published"
+
+
+class AssetType(BaseEnum):
+    PHOTO = "photo", "Photo"
+    VIDEO = "video", "Video"
+    DOCUMENT = "document", "Document"
+    OTHER = "other", "Other"
+
