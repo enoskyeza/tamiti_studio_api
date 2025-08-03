@@ -86,3 +86,4 @@ target/
 *.log
 *.pyc
 local_settings.py
+.env
