@@ -10,18 +10,18 @@ class Command(BaseCommand):
         self.stdout.write("🔄 Seeding core account data...")
 
         # Branch
-        branch_name = "Headoffice"
+        branch_name = "Head Office"
         branch, created = Branch.objects.get_or_create(name=branch_name)
         self.stdout.write(f"{'✅ Created' if created else '⚠️ Exists'} Branch: {branch.name}")
 
         # Departments
-        departments = ["Finance", "Projects", "Digital", "Content", "Admin", "Sales", "Development", "Marketing", "Field"]
+        departments = ["Finance", "Projects", "Digital", "Content", "Admin", "Sales", "Development", "Marketing", "Field Operations"]
         for name in departments:
             dept, created = Department.objects.get_or_create(name=name)
             self.stdout.write(f"{'✅ Created' if created else '⚠️ Exists'} Department: {dept.name}")
 
         # Designations
-        designations = ["Manager", "Officer", "Assistant", "Field Agent", "Designer", "Developer", "Executive"]
+        designations = ["Manager", "Mascot", "Officer", "Assistant", "Field Agent", "Designer", "Developer", "Executive"]
         for name in designations:
             desig, created = Designation.objects.get_or_create(name=name)
             self.stdout.write(f"{'✅ Created' if created else '⚠️ Exists'} Designation: {desig.name}")

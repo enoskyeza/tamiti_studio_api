@@ -9,6 +9,7 @@ https://docs.djangoproject.com/en/5.1/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.1/ref/settings/
 """
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -52,7 +53,8 @@ INSTALLED_APPS = [
     'tasks',
     'projects',
     'finance',
-    'field'
+    'field',
+    'assistants'
 ]
 
 MIDDLEWARE = [
@@ -179,6 +181,8 @@ REST_FRAMEWORK.update({
     }
 })
 
+# AI intergration
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
