@@ -1,6 +1,6 @@
 import logging
 import openai
-from openai.error import OpenAIError
+from openai import OpenAIError
 from django.conf import settings
 from .models import VACommand, AssistantLog, DefaultResponse
 
