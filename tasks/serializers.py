@@ -37,7 +37,7 @@ class TaskCreateSerializer(TaggitSerializer, serializers.ModelSerializer):
         fields = (
             'project', 'title', 'description', 'priority', 'due_date',
             'estimated_hours', 'assigned_to', 'notes', 'origin_app',
-            'milestone', 'dependencies'
+            'milestone', 'dependencies', 'tags'
         )
 
 

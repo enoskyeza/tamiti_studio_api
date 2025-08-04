@@ -32,7 +32,7 @@ class Notification(BaseModel):
     )
     object_id = models.PositiveIntegerField(null=True, blank=True)
     target = GenericForeignKey('content_type', 'object_id')
-    level = models.CharField(max_length=10, choices=LEVEL_CHOICES, default="info")
+    # level = models.CharField(max_length=10, choices=LEVEL_CHOICES, default="info")
     url = models.URLField(max_length=255, blank=True, null=True)
     is_read = models.BooleanField(default=False)
 

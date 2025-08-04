@@ -45,7 +45,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Task.objects.filter(project__created_by=self.request.user)
 
 
-@extend_schema(response=TaskToggleSerializer)
+@extend_schema(responses=TaskToggleSerializer)
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_task_completion(request, task_id):
