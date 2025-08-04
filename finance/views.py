@@ -61,6 +61,12 @@ class RequisitionViewSet(BaseModelViewSet):
         pending = self.queryset.filter(status='pending')
         return Response(self.get_serializer(pending, many=True).data)
 
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        requisition = self.get_object()
+        requisition.approve(request.user)
+        return Response(self.get_serializer(requisition).data)
+
 
 class GoalViewSet(BaseModelViewSet):
     queryset = Goal.objects.prefetch_related('milestones')

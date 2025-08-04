@@ -7,7 +7,7 @@ from users.models import User
 from .models import Notification
 
 
-# --- Utility functions -----------------------------------------------------
+# --- Utility function -----------------------------------------------------
 
 def _notify(actor, recipient, verb, target=None, url=""):
     if recipient is None:
@@ -21,7 +21,7 @@ def _notify(actor, recipient, verb, target=None, url=""):
     )
 
 
-# --- Requisition signals ---------------------------------------------------
+# --- Requisition Signals --------------------------------------------------
 
 @receiver(pre_save, sender=Requisition)
 def cache_requisition_status(sender, instance, **kwargs):
@@ -32,9 +32,7 @@ def cache_requisition_status(sender, instance, **kwargs):
 
 @receiver(post_save, sender=Requisition)
 def requisition_approval_notification(sender, instance, created, **kwargs):
-    if created:
-        return
-    if instance.status != 'approved':
+    if created or instance.status != 'approved':
         return
     if getattr(instance, '_previous_status', None) == 'approved':
         return
@@ -48,7 +46,7 @@ def requisition_approval_notification(sender, instance, created, **kwargs):
     )
 
 
-# --- Task signals ----------------------------------------------------------
+# --- Task Signals ---------------------------------------------------------
 
 @receiver(pre_save, sender=Task)
 def cache_task_assignment(sender, instance, **kwargs):
@@ -58,25 +56,36 @@ def cache_task_assignment(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=Task)
-def task_assignment_notification(sender, instance, created, **kwargs):
+def task_notifications(sender, instance, created, **kwargs):
     instance = sender.objects.select_related('assigned_to', 'created_by').get(pk=instance.pk)
-    previous_user = getattr(instance, '_previous_assigned_to', None)
-    if instance.assigned_to and instance.assigned_to != previous_user:
-        _notify(
-            actor=instance.created_by,
-            recipient=instance.assigned_to,
-            verb="assigned you to a task",
-            target=instance,
-            url=f"/tasks/{instance.pk}/",
-        )
-    if previous_user and previous_user != instance.assigned_to:
-        _notify(
-            actor=instance.created_by,
-            recipient=previous_user,
-            verb="unassigned you from a task",
-            target=instance,
-            url=f"/tasks/{instance.pk}/",
-        )
+    if created:
+        user = instance.assigned_to or instance.created_by
+        if user:
+            _notify(
+                actor=instance.created_by,
+                recipient=user,
+                verb="created a task",
+                target=instance,
+                url=f"/tasks/{instance.pk}/",
+            )
+    else:
+        previous_user = getattr(instance, '_previous_assigned_to', None)
+        if instance.assigned_to and instance.assigned_to != previous_user:
+            _notify(
+                actor=instance.created_by,
+                recipient=instance.assigned_to,
+                verb="assigned you to a task",
+                target=instance,
+                url=f"/tasks/{instance.pk}/",
+            )
+        if previous_user and previous_user != instance.assigned_to:
+            _notify(
+                actor=instance.created_by,
+                recipient=previous_user,
+                verb="unassigned you from a task",
+                target=instance,
+                url=f"/tasks/{instance.pk}/",
+            )
 
 
 @receiver(pre_delete, sender=Task)
@@ -98,10 +107,10 @@ def task_delete_notification(sender, instance, **kwargs):
         )
 
 
-# --- Invoice signals -------------------------------------------------------
+# --- Invoice Signals ------------------------------------------------------
 
 @receiver(post_save, sender=Invoice)
-def invoice_creation_notification(sender, instance, created, **kwargs):
+def invoice_created_notification(sender, instance, created, **kwargs):
     if not created:
         return
     instance = sender.objects.select_related('party__user').get(pk=instance.pk)
@@ -110,16 +119,16 @@ def invoice_creation_notification(sender, instance, created, **kwargs):
         _notify(
             actor=None,
             recipient=user,
-            verb="created an invoice",
+            verb=f"created an invoice",
             target=instance,
             url=f"/finance/invoices/{instance.pk}/",
         )
 
 
-# --- Payment signals -------------------------------------------------------
+# --- Payment Signals ------------------------------------------------------
 
 @receiver(post_save, sender=Payment)
-def payment_confirmation_notification(sender, instance, created, **kwargs):
+def payment_created_notification(sender, instance, created, **kwargs):
     if not created:
         return
     instance = sender.objects.select_related('requisition__requested_by', 'requisition__approved_by').get(pk=instance.pk)

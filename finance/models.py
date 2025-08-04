@@ -42,6 +42,14 @@ class Account(BaseModel):
         self.balance = income - expense
         self.save(update_fields=['balance'])
 
+    def apply_transaction(self, tx_type, amount):
+        if tx_type == TransactionType.INCOME:
+            self.balance += amount
+        else:
+            self.balance -= amount
+        self.save(update_fields=['balance'])
+
+
 
 class Invoice(BaseModel):
     party = models.ForeignKey(Party, on_delete=models.CASCADE)
@@ -103,6 +111,13 @@ class Requisition(BaseModel):
     purpose = models.TextField()
     comments = models.TextField(blank=True)
     date_approved = models.DateField(null=True, blank=True)
+
+
+    def approve(self, user: User):
+        self.approved_by = user
+        self.status = 'approved'
+        self.date_approved = timezone.now().date()
+        self.save()
 
 
 class Payment(BaseModel):
@@ -169,7 +184,8 @@ class Transaction(BaseModel):
     is_automated = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
+        creating = self._state.adding
         super().save(*args, **kwargs)
-        if self.account:
-            self.account.update_balance()
+        if creating and self.account:
+            self.account.apply_transaction(self.type, self.amount)
 
