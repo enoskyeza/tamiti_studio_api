@@ -37,3 +37,9 @@ class TaskUpdateSerializer(serializers.ModelSerializer):
             'estimated_hours', 'actual_hours', 'assigned_to',
          'tags', 'notes', 'milestone', 'dependencies'
         )
+
+
+class TaskToggleSerializer(serializers.Serializer):
+    task = TaskSerializer(read_only=True)
+    message = serializers.CharField(read_only=True)
+
