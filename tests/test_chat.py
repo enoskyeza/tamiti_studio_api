@@ -17,7 +17,7 @@ def test_create_channel_message():
 def test_direct_message_exchange():
     dm = DirectMessageFactory()
     assert dm.pk is not None
-    assert dm.thread.user1 != dm.thread.user2
+    assert dm.thread.user_1 != dm.thread.user_2
 
 @pytest.mark.django_db
 def test_channel_membership():

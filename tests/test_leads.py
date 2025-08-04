@@ -11,7 +11,7 @@ def test_lead_conversion():
     visit = VisitFactory()
     client = APIClient()
     client.force_authenticate(user=visit.rep)
-    response = client.post(f"/visits/{visit.id}/convert_to_lead/")
+    response = client.post(f"/api/field/visits/{visit.id}/convert_to_lead/")
     assert response.status_code == 200
     visit.refresh_from_db()
     assert visit.linked_lead is not None

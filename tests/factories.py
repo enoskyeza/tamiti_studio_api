@@ -96,9 +96,9 @@ class AccountFactory(DjangoModelFactory):
         model = Account
 
     name = factory.Faker('company')
-    number = factory.Faker('bank_account')
+    number = factory.Faker('iban')
     type = AccountType.BANK
-    balance = 100000
+    balance = 0
     currency = Currency.USD
 
 
@@ -253,8 +253,8 @@ class DirectThreadFactory(DjangoModelFactory):
     class Meta:
         model = DirectThread
 
-    user1 = factory.SubFactory(UserFactory)
-    user2 = factory.SubFactory(UserFactory)
+    user_1 = factory.SubFactory(UserFactory)
+    user_2 = factory.SubFactory(UserFactory)
 
 
 class DirectMessageFactory(DjangoModelFactory):
