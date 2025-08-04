@@ -28,10 +28,11 @@ class Account(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.type})"
 
-    def update_balance(self):
-        income = self.incoming_transactions.aggregate(total=Sum('amount'))['total'] or 0
-        expense = self.outgoing_transactions.aggregate(total=Sum('amount'))['total'] or 0
-        self.balance = income - expense
+    def apply_transaction(self, tx_type, amount):
+        if tx_type == 'income':
+            self.balance += amount
+        else:
+            self.balance -= amount
         self.save(update_fields=['balance'])
 
 
@@ -95,6 +96,13 @@ class Requisition(BaseModel):
     purpose = models.TextField()
     comments = models.TextField(blank=True)
     date_approved = models.DateField(null=True, blank=True)
+
+
+    def approve(self, user: User):
+        self.approved_by = user
+        self.status = 'approved'
+        self.date_approved = timezone.now().date()
+        self.save()
 
 
 class Payment(BaseModel):
@@ -161,7 +169,8 @@ class Transaction(BaseModel):
     is_automated = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
+        creating = self._state.adding
         super().save(*args, **kwargs)
-        if self.account:
-            self.account.update_balance()
+        if creating and self.account:
+            self.account.apply_transaction(self.type, self.amount)
 
