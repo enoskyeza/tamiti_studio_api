@@ -37,3 +37,6 @@ class Notification(BaseModel):
             models.Index(fields=['is_read']),
             models.Index(fields=['timestamp']),
         ]
+        
+    def __str__(self) -> str:
+        return f"Notification({self.actor_id}, read={self.is_read})"
