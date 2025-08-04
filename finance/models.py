@@ -28,6 +28,14 @@ class Account(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.type})"
 
+    @property
+    def incoming_transactions(self):
+        return self.transaction_set.filter(type=TransactionType.INCOME)
+
+    @property
+    def outgoing_transactions(self):
+        return self.transaction_set.filter(type=TransactionType.EXPENSE)
+
     def update_balance(self):
         income = self.incoming_transactions.aggregate(total=Sum('amount'))['total'] or 0
         expense = self.outgoing_transactions.aggregate(total=Sum('amount'))['total'] or 0
