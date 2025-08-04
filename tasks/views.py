@@ -22,6 +22,8 @@ class TaskListCreateView(generics.ListCreateAPIView):
         return TaskCreateSerializer if self.request.method == 'POST' else TaskSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Task.objects.none()
         qs = Task.objects.filter(project__created_by=self.request.user)
         if pid := self.request.query_params.get('project'):
             qs = qs.filter(project_id=pid)
