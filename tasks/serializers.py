@@ -16,7 +16,13 @@ class TaskSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Task
-        fields = '__all__'
+        fields = (
+            'id', 'project', 'project_name', 'title', 'description', 'status',
+            'priority', 'due_date', 'estimated_hours', 'actual_hours',
+            'assigned_to', 'assigned_to_email', 'dependencies', 'milestone',
+            'origin_app', 'created_by', 'notes', 'position', 'is_completed',
+            'completed_at', 'created_at', 'updated_at', 'is_overdue'
+        )
         read_only_fields = ('created_at', 'updated_at', 'completed_at')
 
 
@@ -30,8 +36,8 @@ class TaskCreateSerializer(TaggitSerializer, serializers.ModelSerializer):
         model = Task
         fields = (
             'project', 'title', 'description', 'priority', 'due_date',
-            'estimated_hours', 'assigned_to',
-            'tags', 'notes', 'origin_app', 'milestone', 'dependencies'
+            'estimated_hours', 'assigned_to', 'notes', 'origin_app',
+            'milestone', 'dependencies'
         )
 
 
@@ -44,9 +50,8 @@ class TaskUpdateSerializer(TaggitSerializer, serializers.ModelSerializer):
     class Meta:
         model = Task
         fields = (
-            'title', 'description', 'priority', 'is_completed', 'due_date',
-            'estimated_hours', 'actual_hours', 'assigned_to',
-            'tags', 'notes', 'milestone', 'dependencies'
+            'title', 'description', 'priority', 'is_completed', 'due_date','estimated_hours', 'actual_hours', 
+           'assigned_to', 'tags', 'notes', 'milestone', 'dependencies'
         )
 
 
