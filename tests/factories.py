@@ -98,7 +98,7 @@ class AccountFactory(DjangoModelFactory):
     name = factory.Faker('company')
     number = factory.Faker('iban')
     type = AccountType.BANK
-    balance = 100000
+    balance = 0
     currency = Currency.USD
 
 

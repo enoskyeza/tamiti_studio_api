@@ -3,12 +3,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, permissions, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 
 from tasks.filters import TaskFilter
 from tasks.models import Task
 from tasks.serializers import (
     TaskSerializer, TaskCreateSerializer, TaskUpdateSerializer,
-    TaskGroupSerializer
+    TaskGroupSerializer, TaskToggleSerializer
 )
 
 
@@ -21,6 +22,8 @@ class TaskListCreateView(generics.ListCreateAPIView):
         return TaskCreateSerializer if self.request.method == 'POST' else TaskSerializer
 
     def get_queryset(self):
+        if getattr(self, "swagger_fake_view", False):
+            return Task.objects.none()
         qs = Task.objects.filter(project__created_by=self.request.user)
         if pid := self.request.query_params.get('project'):
             qs = qs.filter(project_id=pid)
@@ -42,6 +45,7 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Task.objects.filter(project__created_by=self.request.user)
 
 
+@extend_schema(response=TaskToggleSerializer)
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_task_completion(request, task_id):

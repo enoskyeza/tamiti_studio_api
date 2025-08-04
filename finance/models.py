@@ -28,12 +28,27 @@ class Account(BaseModel):
     def __str__(self):
         return f"{self.name} ({self.type})"
 
+    @property
+    def incoming_transactions(self):
+        return self.transaction_set.filter(type=TransactionType.INCOME)
+
+    @property
+    def outgoing_transactions(self):
+        return self.transaction_set.filter(type=TransactionType.EXPENSE)
+
+    def update_balance(self):
+        income = self.incoming_transactions.aggregate(total=Sum('amount'))['total'] or 0
+        expense = self.outgoing_transactions.aggregate(total=Sum('amount'))['total'] or 0
+        self.balance = income - expense
+        self.save(update_fields=['balance'])
+
     def apply_transaction(self, tx_type, amount):
-        if tx_type == 'income':
+        if tx_type == TransactionType.INCOME:
             self.balance += amount
         else:
             self.balance -= amount
         self.save(update_fields=['balance'])
+
 
 
 class Invoice(BaseModel):
