@@ -1,8 +1,7 @@
-from rest_framework import viewsets, permissions
-from rest_framework.decorators import action
-from rest_framework.response import Response
+from rest_framework import viewsets, permissions, decorators, response
 from django_filters.rest_framework import DjangoFilterBackend
 from common.pagination import DefaultPagination
+
 from .models import Notification
 from .serializers import NotificationSerializer
 
@@ -14,7 +13,7 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
     filter_backends = [DjangoFilterBackend]
     filterset_fields = {
         'is_read': ['exact'],
-        'timestamp': ['gte', 'lte'],
+        'created_at': ['gte', 'lte'],
     }
 
     def get_queryset(self):
@@ -23,21 +22,21 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related('actor', 'content_type')
         )
 
-    @action(detail=True, methods=['post'])
+    @decorators.action(detail=True, methods=['post'], url_path='mark-read')
     def mark_read(self, request, pk=None):
         notification = self.get_object()
         notification.is_read = True
         notification.save(update_fields=['is_read'])
-        return Response({'status': 'marked read'})
+        return response.Response({'status': 'marked read'})
 
-    @action(detail=True, methods=['post'])
+    @decorators.action(detail=True, methods=['post'], url_path='mark-unread')
     def mark_unread(self, request, pk=None):
         notification = self.get_object()
         notification.is_read = False
         notification.save(update_fields=['is_read'])
-        return Response({'status': 'marked unread'})
+        return response.Response({'status': 'marked unread'})
 
-    @action(detail=False, methods=['post'])
+    @decorators.action(detail=False, methods=['post'], url_path='mark-all-read')
     def mark_all_read(self, request):
-        self.get_queryset().filter(is_read=False).update(is_read=True)
-        return Response({'status': 'all marked read'})
+        updated = self.get_queryset().filter(is_read=False).update(is_read=True)
+        return response.Response({'updated': updated})
