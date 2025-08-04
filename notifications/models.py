@@ -11,7 +11,7 @@ class Notification(BaseModel):
         User,
         null=True,
         blank=True,
-        related_name='actions',
+        related_name='actor_notifications',
         on_delete=models.SET_NULL,
     )
     recipient = models.ForeignKey(
@@ -20,19 +20,27 @@ class Notification(BaseModel):
         on_delete=models.CASCADE,
     )
     verb = models.CharField(max_length=255)
-    target_content_type = models.ForeignKey(
+
+    # Generic relation to the target object
+    content_type = models.ForeignKey(
         ContentType,
         null=True,
         blank=True,
         on_delete=models.CASCADE,
     )
-    target_object_id = models.PositiveIntegerField(null=True, blank=True)
-    target = GenericForeignKey('target_content_type', 'target_object_id')
-    url = models.URLField(blank=True)
-    read = models.BooleanField(default=False)
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    target = GenericForeignKey('content_type', 'object_id')
+
+    url = models.URLField(max_length=255, blank=True, null=True)
+    is_read = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['recipient']),
+            models.Index(fields=['is_read']),
+            models.Index(fields=['created_at']),
+        ]
 
     def __str__(self) -> str:
         return f"{self.actor} {self.verb} {self.target}"

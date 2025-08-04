@@ -16,7 +16,7 @@ tamiti/
 ├── digital/                    # Social campaigns & scheduling
 ├── field/                      # Leads, field forms, status tracking
 ├── chat/                       # Virtual staff, summaries
-├── notifications/             # In-app and email notifications
+├── notifications/             # In-app and email notifications; integrates with task and user signals, see `notifications/README.md` for API details
 ├── focus/                      # Productivity streaks & focus tools
 ├── templates/                  # Emails, verification templates
 ├── tests/                      # Global test utilities & factories
