@@ -1,3 +1,5 @@
+from drf_spectacular.utils import extend_schema, OpenApiParameter
+
 from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import generics, permissions, status
@@ -45,7 +47,11 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         return Task.objects.filter(project__created_by=self.request.user)
 
 
-@extend_schema(responses=TaskToggleSerializer)
+@extend_schema(
+    parameters=[OpenApiParameter(name="task_id", type=int, location=OpenApiParameter.PATH)],
+    request=None,
+    responses=TaskToggleSerializer,  # or TaskSerializer if you prefer the full task structure
+)
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def toggle_task_completion(request, task_id):
