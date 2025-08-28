@@ -56,7 +56,8 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
 ]
 
-CORS_ALLOW_ALL_ORIGINS = DEBUG
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOW_CREDENTIALS = True
 
 ROOT_URLCONF = 'tamiti_studio.urls'
 
@@ -145,6 +146,7 @@ SPECTACULAR_SETTINGS = {
     'SERVE_INCLUDE_SCHEMA': False,
     'ENUM_NAME_OVERRIDES': {
         'TaskStatus': 'common.enums.TaskStatus',
+        "UrgencyEnum": "TaskUrgencyEnum",
         'ProjectStatus': 'common.enums.ProjectStatus',
         'PostStatus': 'common.enums.PostStatus',
         'PartyType': 'common.enums.PartyType',
@@ -185,6 +187,8 @@ REST_FRAMEWORK.update({
     }
 })
 
+
+
 # AI integration
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
@@ -198,3 +202,6 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
