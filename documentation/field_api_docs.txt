@@ -1,0 +1,114 @@
+# 📋 Field & Lead Tracker API Documentation
+
+Tamiti Studio — Sprint 3
+
+---
+
+## 🧭 Endpoints Overview
+
+| Resource   | Endpoint              | Methods       | Description                                  |
+|------------|------------------------|---------------|----------------------------------------------|
+| Zone       | `/zones/`              | GET, POST     | List or create a zone                        |
+|            | `/zones/{id}/`         | GET, PUT, PATCH, DELETE | Retrieve, update, or delete a zone  |
+| Lead       | `/leads/`              | GET, POST     | List or create a lead                        |
+|            | `/leads/{id}/`         | GET, PUT, PATCH, DELETE | Retrieve/update/delete lead       |
+|            | `/leads/hot/`          | GET           | List only hot/high-priority leads            |
+| Visit      | `/visits/`             | GET, POST     | List or create a field visit                 |
+|            | `/visits/{id}/`        | GET, PUT, PATCH, DELETE | View or modify visit            |
+|            | `/visits/{id}/convert_to_lead/` | POST | Convert a visit to lead               |
+| LeadAction | `/actions/`            | GET, POST     | List or log follow-up actions                |
+|            | `/actions/{id}/`       | GET, PUT, PATCH, DELETE | Manage a follow-up record         |
+
+---
+
+## 📦 Models & Fields
+
+### 🗺️ Zone
+```json
+{
+  "name": "Central",
+  "region": "Kampala",
+  "created_by": 3
+}
+```
+
+### 📇 Lead
+```json
+{
+  "business_name": "Tech Solutions Ltd",
+  "contact_name": "John Doe",
+  "contact_phone": "0770000000",
+  "contact_email": "j.doe@example.com",
+  "stage": "prospect",
+  "source": "field",
+  "zone": 2,
+  "assigned_rep": 1,
+  "products_discussed": ["Website", "App"],
+  "notes": "They want training for staff.",
+  "follow_up_type": "call",
+  "follow_up_date": "2025-08-10",
+  "priority": "high",
+  "tags": "#vip,#urgent",
+  "location": "Kampala Industrial Area"
+}
+```
+
+### 🧍 Visit
+```json
+{
+  "business_name": "GreenTech Farm",
+  "contact_name": "Jane",
+  "contact_phone": "0788888888",
+  "contact_email": "jane@greentech.com",
+  "products_discussed": ["Hosting", "Training"],
+  "location": "Masaka Town",
+  "zone": 1,
+  "rep": 2,
+  "visit_outcome": "interested",
+  "feedback_notes": "Wants quick demo",
+  "follow_up_type": "demo",
+  "follow_up_date": "2025-08-08",
+  "add_as_lead": true
+}
+```
+
+### 🔁 LeadAction
+```json
+{
+  "lead": 1,
+  "type": "call",
+  "notes": "Called and confirmed receipt of quote.",
+  "outcome": "Interested in closing",
+  "next_follow_up": "2025-08-12"
+}
+```
+
+---
+
+## 🔐 Authentication
+All endpoints require:
+```http
+Authorization: Bearer <access_token>
+```
+
+---
+
+## 🧠 Special Features
+
+### ✅ `POST /visits/{id}/convert_to_lead/`
+Automatically converts a visit into a lead if `add_as_lead=true`. Returns the new lead info.
+
+### 🔥 `GET /leads/hot/`
+Returns leads with either:
+- Critical or high priority
+- Lead score ≥ 80
+
+---
+
+## 🚀 Pagination, Filters & Search
+- Search supported on names, phones, locations
+- Ordering by `lead_score`, `priority`, `follow_up_date`
+
+---
+
+For internal API usage standards and changelogs, see `docs/changelog.md`.

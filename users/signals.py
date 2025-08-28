@@ -2,7 +2,7 @@
 
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from .models import User
+from .models import User, UserPreferences
 from accounts.models import StaffProfile, CustomerProfile
 
 @receiver(post_save, sender=User)
@@ -12,3 +12,10 @@ def create_user_profile(sender, instance, created, **kwargs):
             StaffProfile.objects.create(user=instance)
         elif instance.role == User.Role.CUSTOMER and not hasattr(instance, 'customer_profile'):
             CustomerProfile.objects.create(user=instance)
+
+
+@receiver(post_save, sender=User)
+def create_user_preferences(sender, instance, created, **kwargs):
+    if created:
+        UserPreferences.objects.create(user=instance)
+

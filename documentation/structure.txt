@@ -1,0 +1,22 @@
+tamiti/
+├── config/                     # Django settings, ASGI/WSGI entrypoints
+│   ├── settings/
+│   │   ├── base.py
+│   │   ├── dev.py
+│   │   ├── prod.py
+├── core/                       # Abstract base models, signals, utils
+├── common/                     # Constants, Enums, Generic permissions/pagination
+├── users/                      # CustomUser, Roles, Profile models
+├── auth/                       # Registration, Login, JWT, Email verification
+├── tasks/                      # Global tasks, tags, assignments
+├── projects/                   # Project structure, team, milestones
+├── finance/                    # Income, expenses, requisitions, goals
+├── media/                      # Uploads, approval flows, usage
+├── content/                    # Galleries, asset tracking
+├── digital/                    # Social campaigns & scheduling
+├── field/                      # Leads, field forms, status tracking
+├── chat/                       # Virtual staff, summaries
+├── notifications/             # In-app and email notifications; integrates with task and user signals, see `notifications/README.md` for API details
+├── focus/                      # Productivity streaks & focus tools
+├── templates/                  # Emails, verification templates
+├── tests/                      # Global test utilities & factories

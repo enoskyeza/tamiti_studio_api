@@ -15,8 +15,43 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
+from django.conf import settings
+from django.conf.urls.static import static
+
+from drf_spectacular.views import (
+    SpectacularAPIView,
+    SpectacularRedocView,
+    SpectacularSwaggerView,
+)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('api/auth/', include('users.urls')),
+    path('api/chat/', include('chatrooms.urls')),
+    path('api/tasks/', include('tasks.urls')),
+    path('api/users/', include('users.urls')),
+    path('api/field/', include('field.urls')),
+    path('api/projects/', include('projects.urls')),
+    path('api/finance/', include('finance.urls')),
+    path('api/assistants/', include('assistants.urls')),
+    path('api/accounts/', include('accounts.urls')),
+    path('api/social/', include('social.urls')),
+    path('api/content/', include('content.urls')),
+    path('api/notifications/', include('notifications.urls', namespace='notifications')),
+    path('api/dashboard/', include('dashboard.urls')),
+
+    # swagger endpoints
+    path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),
+    path('api/redoc/', SpectacularRedocView.as_view(url_name='schema'), name='redoc'),
+
 ]
+
+# debug too settings
+if settings.DEBUG:
+    import debug_toolbar
+    urlpatterns += [
+        path("__debug__/", include(debug_toolbar.urls)),
+    ]
+    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
