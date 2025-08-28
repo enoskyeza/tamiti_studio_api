@@ -1,4 +1,4 @@
-from rest_framework import viewsets, permissions
+from rest_framework import viewsets, permissions, generics
 from accounts.models import *
 from accounts.serializers import *
 
@@ -25,6 +25,33 @@ class StaffProfileViewSet(BaseViewSet):
     queryset = StaffProfile.objects.all()
     serializer_class = StaffProfileSerializer
 
+
 class CustomerProfileViewSet(BaseViewSet):
     queryset = CustomerProfile.objects.all()
     serializer_class = CustomerProfileSerializer
+
+
+class UserListViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = User.objects.all().select_related(
+        'staff_profile__department',
+        'staff_profile__designation',
+        'staff_profile__branch',
+        'staff_profile__role',
+        'customer_profile__referred_by'
+    )
+    serializer_class = UserListSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    search_fields = ['username', 'email', 'phone']
+
+
+class VirtualAssistantListView(generics.ListAPIView):
+    serializer_class = VirtualAssistantSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return StaffProfile.objects.filter(
+            role__is_virtual=True,
+            is_deleted=False
+        ).select_related(
+            'role', 'department', 'designation', 'branch', 'assigned_to', 'created_by'
+        )

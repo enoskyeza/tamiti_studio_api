@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from accounts.models import Department, Designation, Branch, StaffRole, StaffProfile, CustomerProfile
+from users.models import User
+
 
 class DepartmentSerializer(serializers.ModelSerializer):
     class Meta:
@@ -35,3 +37,24 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerProfile
         fields = '__all__'
+
+
+class UserListSerializer(serializers.ModelSerializer):
+    staff_profile = StaffProfileSerializer(read_only=True)
+    customer_profile = CustomerProfileSerializer(read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            'id', 'username', 'email', 'phone', 'role', 'is_active',
+            'staff_profile', 'customer_profile'
+        ]
+
+class VirtualAssistantSerializer(serializers.ModelSerializer):
+    department = serializers.StringRelatedField()
+    designation = serializers.StringRelatedField()
+    branch = serializers.StringRelatedField()
+
+    class Meta:
+        model = StaffProfile
+        fields = ['id', 'name', 'role', 'department', "designation", "branch"]

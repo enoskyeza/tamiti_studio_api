@@ -37,6 +37,9 @@ class StaffRole(BaseModel):
     is_virtual = models.BooleanField(default=False)
     prompt_context = models.TextField(blank=True, help_text="Optional instructions if used as virtual assistant")
 
+    class Meta:
+        ordering = ['id']
+
     def __str__(self):
         return self.title
 
@@ -53,6 +56,7 @@ class StaffProfile(BaseModel):
 
     def __str__(self):
         return self.name or self.user.get_full_name() if self.user else "[Unlinked Staff]"
+
 
 class CustomerProfile(BaseModel):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='customer_profile')
