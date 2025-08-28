@@ -1,7 +1,36 @@
 # users/serializers.py
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from users.models import User
+from users.models import User, UserPreferences
+
+
+class UserPreferencesSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserPreferences
+        fields = ["dark_mode", "language", "daily_summary"]
+
+
+class UserSerializer(serializers.ModelSerializer):
+    preferences = UserPreferencesSerializer(read_only=True)
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "phone",
+            "is_verified",
+            "avatar",
+            "bio",
+            "role",
+            "total_tasks_completed",
+            "last_seen",
+            "streak_days",
+            "current_streak_started",
+            "preferences",
+        ]
+
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -20,11 +49,20 @@ class LoginSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
     def validate(self, data):
+        print("🔎 LoginSerializer.validate() called")
+        print("📨 Data received for authentication:", data)
+
         user = authenticate(**data)
+
         if not user:
+            print("🚫 Authentication failed — Invalid credentials")
             raise serializers.ValidationError("Invalid credentials")
+
         if not user.is_active:
+            print("🚫 Authentication failed — User inactive")
             raise serializers.ValidationError("User is inactive")
+
+        print("✅ Authentication successful for user:", user)
         return user
 
 

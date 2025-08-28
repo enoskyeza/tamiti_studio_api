@@ -1,12 +1,16 @@
 # users/views.py
 from rest_framework import generics, status
 from rest_framework.response import Response
-from rest_framework.permissions import AllowAny
-from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework_simplejwt.tokens import RefreshToken, AccessToken, TokenError
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from rest_framework import serializers as drf_serializers
 
-from users.serializers import RegisterSerializer, LoginSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer
+
+from config.settings import base
+from users.serializers import RegisterSerializer, LoginSerializer, PasswordResetRequestSerializer, \
+    PasswordResetConfirmSerializer, UserSerializer
 from users.tokens import account_activation_token, decode_uid
 from users.models import User
 from users.utils import send_password_reset_email
@@ -17,6 +21,72 @@ def get_tokens_for_user(user):
         'refresh': str(refresh),
         'access': str(refresh.access_token),
     }
+
+
+class CookieTokenRefreshView(generics.GenericAPIView):
+    permission_classes = [AllowAny]
+    serializer_class = drf_serializers.Serializer
+
+    def post(self, request):
+        print("\n========== 🔁 REFRESH TOKEN ATTEMPT ==========")
+        refresh_token = request.COOKIES.get('refresh_token')
+
+        if not refresh_token:
+            print("🚫 No refresh token found in cookies.")
+            print("========== ❌ REFRESH FAILED ❌ ==========\n")
+            return Response(
+                {"error": "No refresh token in cookies"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        print("🍪 Received refresh token from cookie:", refresh_token)
+
+        try:
+            refresh = RefreshToken(refresh_token)
+        except TokenError as e:
+            print("❌ Refresh token error:", str(e))
+            print("========== ❌ REFRESH FAILED ❌ ==========\n")
+            return Response(
+                {"error": "Invalid or expired refresh token"},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        new_access = str(refresh.access_token)
+        new_refresh = str(refresh)
+
+        print("✅ Refresh successful")
+        print("🔐 New access token:", new_access)
+        print("🔁 New refresh token:", new_refresh)
+        print("========== ✅ REFRESH SUCCESS ✅ ==========\n")
+
+        res = Response({"access": new_access}, status=200)
+        res.set_cookie(
+            key='refresh_token',
+            value=new_refresh,
+            httponly=True,
+            secure=not base.DEBUG,
+            samesite="None" if not base.DEBUG else "Lax",
+            max_age=24 * 60 * 60
+        )
+
+        return res
+
+
+class CurrentUserView(generics.GenericAPIView):
+    permission_classes = [IsAuthenticated]
+    serializer_class = UserSerializer
+
+    def get(self, request):
+
+        # print("\n========== 🙋‍♂️ CURRENT USER ATTEMPT ==========")
+        # print("👤 User:", request.user)
+        # print("🛡️ Authenticated:", request.user.is_authenticated)
+        # print("🔐 Headers received:", request.headers.get("Authorization", "❌ No Authorization header"))
+        # print("========== END CURRENT USER ==========\n")
+
+        serializer = self.get_serializer(request.user)
+        return Response(serializer.data)
+
 
 class RegisterView(generics.CreateAPIView):
     serializer_class = RegisterSerializer
@@ -34,11 +104,44 @@ class LoginView(generics.GenericAPIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        print("\n================== 🌐 LOGIN ATTEMPT ==================")
+        print("📩 Endpoint hit: /api/users/login/")
+        print("📦 Raw data from frontend:", request.data)
+
         serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+
+        try:
+            serializer.is_valid(raise_exception=True)
+        except Exception as e:
+            print("❌ serializer.is_valid() raised an error")
+            print("🛑 Validation errors:", serializer.errors)
+            print("================== ❌ END LOGIN ATTEMPT ❌ ==================\n")
+            raise e
+
         user = serializer.validated_data
-        tokens = get_tokens_for_user(user)
-        return Response({"tokens": tokens}, status=status.HTTP_200_OK)
+        print("✅ User validated and returned from serializer:", user)
+
+        refresh = RefreshToken.for_user(user)
+        access_token = str(refresh.access_token)
+
+        print("🎫 Access token generated:", access_token)
+        print("🔁 Refresh token generated:", str(refresh))
+
+        res = Response({"access": access_token}, status=200)
+
+        cookie_max_age = 24 * 60 * 60
+        res.set_cookie(
+            key='refresh_token',
+            value=str(refresh),
+            httponly=True,
+            secure=False,  # Set to True in production with HTTPS
+            samesite="Lax",
+            max_age=cookie_max_age
+        )
+
+        print("✅ Login success, response prepared and refresh_token cookie set.")
+        print("================== ✅ END LOGIN ATTEMPT ✅ ==================\n")
+        return res
 
 
 class VerifyEmailView(APIView):
