@@ -2,8 +2,12 @@ from django.db import models
 from django.utils import timezone
 from core.models import BaseModel
 from users.models import User
-from common.enums import PartyType, InvoiceDirection, TransactionType, AccountType, Currency, PriorityLevel, PaymentCategory
-from django.db.models import Sum
+from common.enums import (
+    PartyType, InvoiceDirection, TransactionType, AccountType, Currency,
+    PriorityLevel, PaymentCategory, QuotationStatus, PaymentMethod
+)
+from django.db.models import Sum, F, DecimalField, Value as V
+from django.db.models.functions import Coalesce
 
 
 class Party(BaseModel):
@@ -50,8 +54,58 @@ class Account(BaseModel):
         self.save(update_fields=['balance'])
 
 
+def invoice_upload_path(instance, filename):
+    # e.g. invoices/2025/party_<id>/<number>.pdf
+    year = timezone.now().year
+    pid = instance.party_id or 'unknown'
+    return f"invoices/{year}/party_{pid}/{filename}"
+
+class InvoiceQuerySet(models.QuerySet):
+    def with_paid_and_due(self):
+        return self.annotate(
+            paid_amount=Coalesce(
+                Sum('payments__amount'),
+                V(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            ),
+        ).annotate(
+            amount_due=F('total') - F('paid_amount')
+        )
+
+    def unpaid(self):
+        return self.with_paid_and_due().filter(amount_due__gt=0)
+
 
 class Invoice(BaseModel):
+    party = models.ForeignKey('finance.Party', related_name='invoices', on_delete=models.PROTECT)
+    direction = models.CharField(max_length=20, choices=InvoiceDirection.choices)
+    number = models.CharField(max_length=50, unique=True)
+    issue_date = models.DateField(default=timezone.now)
+    due_date = models.DateField(blank=True, null=True)
+    currency = models.CharField(max_length=10, choices=Currency.choices, default=Currency.Uganda)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    tax = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=12, decimal_places=2)
+    document = models.FileField(upload_to=invoice_upload_path, blank=True, null=True) image
+
+    objects = InvoiceQuerySet.as_manager()
+
+    class Meta:
+        ordering = ('-issue_date', '-id')
+
+    @property
+    def paid_amount(self):
+        return self.payments.aggregate(
+            total=Coalesce(Sum('amount'), V(0, output_field=DecimalField(max_digits=12, decimal_places=2)))
+        )['total']
+
+    @property
+    def amount_due(self):
+        return max(self.total - (self.paid_amount or 0), 0)
+
+
+class LegacyInvoice(BaseModel):
     party = models.ForeignKey(Party, on_delete=models.CASCADE)
     direction = models.CharField(max_length=10, choices=InvoiceDirection.choices)
     total_amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -74,6 +128,11 @@ class Invoice(BaseModel):
             self.is_paid = True
             self.save(update_fields=['is_paid'])
 
+    def update_total(self):
+        total = self.items.aggregate(total=Sum('amount'))['total'] or 0
+        self.total_amount = total
+        self.save(update_fields=['total_amount'])
+
 
 class Goal(BaseModel):
     title = models.CharField(max_length=255)
@@ -81,6 +140,7 @@ class Goal(BaseModel):
     current_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     due_date = models.DateField()
     owner = models.ForeignKey(User, on_delete=models.CASCADE)
+    description = models.TextField(blank=True)
 
     def update_progress(self):
         total = self.payments.filter(direction='incoming').aggregate(total=Sum('amount'))['total'] or 0
@@ -165,7 +225,6 @@ class Payment(BaseModel):
             self.goal.update_progress()
 
 
-
 class Transaction(BaseModel):
     type = models.CharField(max_length=20, choices=TransactionType.choices)  # income, expense
     amount = models.DecimalField(max_digits=12, decimal_places=2)
@@ -189,3 +248,87 @@ class Transaction(BaseModel):
         if creating and self.account:
             self.account.apply_transaction(self.type, self.amount)
 
+
+class Quotation(BaseModel):
+    party = models.ForeignKey(Party, on_delete=models.CASCADE)
+    quote_number = models.CharField(max_length=50, blank=True)
+    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    description = models.TextField(blank=True)
+    issued_date = models.DateField(default=timezone.now)
+    valid_until = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=QuotationStatus.choices, default=QuotationStatus.DRAFT)
+    related_file = models.FileField(upload_to='quotations/', blank=True, null=True)
+
+    def __str__(self):
+        return f"Quotation #{self.quote_number or self.id} - {self.party.name}"
+
+    def update_total(self):
+        total = self.items.aggregate(total=Sum('amount'))['total'] or 0
+        self.total_amount = total
+        self.save(update_fields=['total_amount'])
+
+
+class Receipt(BaseModel):
+    number = models.CharField(max_length=50, blank=True)
+    date = models.DateField(default=timezone.now)
+    party = models.ForeignKey(Party, on_delete=models.CASCADE)
+    invoice = models.ForeignKey(Invoice, null=True, blank=True, on_delete=models.SET_NULL)
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True)
+    method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
+    reference = models.CharField(max_length=100, blank=True)
+    file = models.FileField(upload_to='receipts/official/', null=True, blank=True)
+    notes = models.TextField(blank=True)
+    payment = models.OneToOneField('Payment', null=True, blank=True, on_delete=models.SET_NULL, related_name='receipt')
+
+    def __str__(self):
+        return f"Receipt {self.number or self.id} - {self.party.name}"
+
+    def update_total(self):
+        total = self.items.aggregate(total=Sum('amount'))['total'] or 0
+        self.amount = total
+        self.save(update_fields=['amount'])
+
+
+class InvoiceItem(BaseModel):
+    invoice = models.ForeignKey(Invoice, related_name='items', on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        # Amount derived from quantity * unit_cost
+        self.amount = (self.quantity or 0) * (self.unit_cost or 0)
+        super().save(*args, **kwargs)
+        # Update parent invoice total
+        self.invoice.update_total()
+
+
+class QuotationItem(BaseModel):
+    quotation = models.ForeignKey(Quotation, related_name='items', on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        self.amount = (self.quantity or 0) * (self.unit_cost or 0)
+        super().save(*args, **kwargs)
+        self.quotation.update_total()
+
+
+class ReceiptItem(BaseModel):
+    receipt = models.ForeignKey(Receipt, related_name='items', on_delete=models.CASCADE)
+    name = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+
+    def save(self, *args, **kwargs):
+        self.amount = (self.quantity or 0) * (self.unit_cost or 0)
+        super().save(*args, **kwargs)
+        self.receipt.update_total()

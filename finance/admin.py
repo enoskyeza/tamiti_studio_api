@@ -1,7 +1,9 @@
 from django.contrib import admin
 from finance.models import (
     Party, Account, Invoice, Payment, Transaction,
-    Goal, GoalMilestone, Requisition
+    Goal, GoalMilestone, Requisition,
+    Quotation, Receipt,
+    InvoiceItem, QuotationItem, ReceiptItem,
 )
 
 
@@ -37,15 +39,26 @@ class InvoiceAdmin(admin.ModelAdmin):
     search_fields = ('party__name', 'description')
     date_hierarchy = 'issued_date'
     autocomplete_fields = ('party',)
+    inlines = []
 
     def party_link(self, obj):
         return admin.utils.format_html('<a href="/admin/finance/party/{}/change/">{}</a>', obj.party.id, obj.party.name)
     party_link.short_description = 'Party'
 
 
+class InvoiceItemInline(admin.TabularInline):
+    model = InvoiceItem
+    extra = 1
+    fields = ('name', 'description', 'quantity', 'unit_cost', 'amount')
+    readonly_fields = ('amount',)
+
+
+InvoiceAdmin.inlines.append(InvoiceItemInline)
+
+
 @admin.register(Payment)
 class PaymentAdmin(admin.ModelAdmin):
-    list_display = ('id', 'direction', 'amount', 'party_link', 'account', 'invoice_link', 'requisition_link', 'goal')
+    list_display = ('id', 'direction', 'amount', 'party_link', 'account', 'invoice_link', 'requisition_link', 'goal', 'receipt_link')
     list_filter = ('direction', 'goal')
     search_fields = ('party__name', 'notes')
     autocomplete_fields = ('party', 'account', 'invoice', 'requisition', 'goal')
@@ -62,6 +75,9 @@ class PaymentAdmin(admin.ModelAdmin):
     party_link.short_description = 'Party'
     invoice_link.short_description = 'Invoice'
     requisition_link.short_description = 'Requisition'
+    def receipt_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/receipt/{}/change/">Receipt #{}</a>', obj.receipt.id, obj.receipt.id) if hasattr(obj, 'receipt') and obj.receipt else '-'
+    receipt_link.short_description = 'Receipt'
 
 
 @admin.register(Transaction)
@@ -92,3 +108,54 @@ class RequisitionAdmin(admin.ModelAdmin):
     list_filter = ('status', 'urgency')
     search_fields = ('purpose', 'comments')
     autocomplete_fields = ('requested_by', 'approved_by')
+
+
+@admin.register(Quotation)
+class QuotationAdmin(admin.ModelAdmin):
+    list_display = ('id', 'quote_number', 'party_link', 'total_amount', 'status', 'issued_date', 'valid_until')
+    list_filter = ('status',)
+    search_fields = ('quote_number', 'party__name', 'description')
+    autocomplete_fields = ('party',)
+    inlines = []
+
+    def party_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/party/{}/change/">{}</a>', obj.party.id, obj.party.name)
+    party_link.short_description = 'Party'
+
+
+class QuotationItemInline(admin.TabularInline):
+    model = QuotationItem
+    extra = 1
+    fields = ('name', 'description', 'quantity', 'unit_cost', 'amount')
+    readonly_fields = ('amount',)
+
+
+QuotationAdmin.inlines.append(QuotationItemInline)
+
+
+@admin.register(Receipt)
+class ReceiptAdmin(admin.ModelAdmin):
+    list_display = ('id', 'number', 'party_link', 'amount', 'date', 'method', 'invoice_link')
+    list_filter = ('method',)
+    search_fields = ('number', 'party__name', 'reference', 'notes')
+    autocomplete_fields = ('party', 'invoice', 'account', 'payment')
+    inlines = []
+
+    def party_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/party/{}/change/">{}</a>', obj.party.id, obj.party.name)
+
+    def invoice_link(self, obj):
+        return admin.utils.format_html('<a href="/admin/finance/invoice/{}/change/">Invoice #{}</a>', obj.invoice.id, obj.invoice.id) if obj.invoice else '-'
+
+    party_link.short_description = 'Party'
+    invoice_link.short_description = 'Invoice'
+
+
+class ReceiptItemInline(admin.TabularInline):
+    model = ReceiptItem
+    extra = 1
+    fields = ('name', 'description', 'quantity', 'unit_cost', 'amount')
+    readonly_fields = ('amount',)
+
+
+ReceiptAdmin.inlines.append(ReceiptItemInline)
