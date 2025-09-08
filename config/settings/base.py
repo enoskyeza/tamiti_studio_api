@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     'notifications',
     'planner',
     'comments',
+    'permissions',
 ]
 
 MIDDLEWARE = [
