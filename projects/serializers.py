@@ -46,6 +46,14 @@ class ProjectSerializer(serializers.ModelSerializer):
     task_count = serializers.SerializerMethodField()
     completed_task_count = serializers.SerializerMethodField()
     is_overdue = serializers.ReadOnlyField()
+    progress = serializers.ReadOnlyField()
+    startDate = serializers.ReadOnlyField()
+    endDate = serializers.ReadOnlyField()
+    clientName = serializers.ReadOnlyField()
+    clientEmail = serializers.ReadOnlyField()
+    assignedUsers = serializers.ReadOnlyField()
+    createdAt = serializers.DateTimeField(source='created_at', read_only=True)
+    updatedAt = serializers.DateTimeField(source='updated_at', read_only=True)
 
     class Meta:
         model = Project

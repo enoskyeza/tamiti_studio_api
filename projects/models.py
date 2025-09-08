@@ -12,6 +12,7 @@ class Project(BaseModel):
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     client_name = models.CharField(max_length=255, blank=True)
+    client_email = models.EmailField(blank=True)
     status = models.CharField(max_length=32, choices=ProjectStatus.choices, default=ProjectStatus.PLANNING)
     priority = models.CharField(max_length=20, choices=PriorityLevel.choices, default=PriorityLevel.MEDIUM)
     start_date = models.DateField()
@@ -40,6 +41,36 @@ class Project(BaseModel):
         if self.due_date and self.status not in [ProjectStatus.COMPLETE, ProjectStatus.CANCELLED]:
             return timezone.now().date() > self.due_date
         return False
+
+    @property
+    def progress(self):
+        """Alias for completion_percentage to match mockup API"""
+        return self.completion_percentage
+
+    @property
+    def startDate(self):
+        """Alias for start_date to match mockup API"""
+        return self.start_date.isoformat() if self.start_date else None
+
+    @property
+    def endDate(self):
+        """Alias for due_date to match mockup API"""
+        return self.due_date.isoformat() if self.due_date else None
+
+    @property
+    def clientName(self):
+        """Alias for client_name to match mockup API"""
+        return self.client_name
+
+    @property
+    def clientEmail(self):
+        """Alias for client_email to match mockup API"""
+        return self.client_email
+
+    @property
+    def assignedUsers(self):
+        """Return list of assigned user IDs to match mockup API"""
+        return list(self.members.values_list('user_id', flat=True))
 
 
 class ProjectMember(BaseModel):
