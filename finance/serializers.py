@@ -6,12 +6,13 @@ from finance.models import (
 )
 from common.enums import PartyType
 from finance.services import FinanceService
-
+from users.models import User
 
 class PartySerializer(serializers.ModelSerializer):
     class Meta:
         model = Party
         fields = '__all__'
+
 
 
 class AccountSerializer(serializers.ModelSerializer):
@@ -26,51 +27,7 @@ class PartyInlineSerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'email', 'phone', 'type', 'is_internal_user')
 
 
-class InvoiceSerializer(serializers.ModelSerializer):
-    balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    items = serializers.SerializerMethodField()
-    # Accept either a party id or a nested party object for creation
-    party = serializers.JSONField()
-
-    class Meta:
-        model = Invoice
-        fields = '__all__'
-
-    def get_items(self, obj):
-        return InvoiceItemSerializer(obj.items.all(), many=True).data
-
-    def _resolve_party(self, party_data):
-        # Accepts int id or dict with fields for new/existing party
-        if isinstance(party_data, int):
-            return Party.objects.get(pk=party_data)
-        if isinstance(party_data, dict):
-            pid = party_data.get('id')
-            if pid:
-                return Party.objects.get(pk=pid)
-            # create new party
-            p = Party.objects.create(
-                name=party_data.get('name', ''),
-                email=party_data.get('email') or None,
-                phone=party_data.get('phone') or '',
-                type=party_data.get('type') or PartyType.CLIENT,
-                is_internal_user=party_data.get('is_internal_user') or False,
-            )
-            return p
-        raise serializers.ValidationError({'party': 'Invalid party payload'})
-
-    def create(self, validated_data):
-        party_payload = self.initial_data.get('party')
-        if party_payload is not None:
-            party = self._resolve_party(party_payload)
-            validated_data['party'] = party
-        return super().create(validated_data)
-
-    def update(self, instance, validated_data):
-        party_payload = self.initial_data.get('party')
-        if party_payload is not None and isinstance(party_payload, (dict, int)):
-            party = self._resolve_party(party_payload)
-            validated_data['party'] = party
-        return super().update(instance, validated_data)
+## Removed obsolete catch-all InvoiceSerializer in favor of explicit list/create serializers
 
 
 class GoalMilestoneSerializer(serializers.ModelSerializer):
@@ -90,13 +47,13 @@ class GoalSerializer(serializers.ModelSerializer):
 # --- Brief serializers for debts/creditors views ---
 class InvoiceBriefSerializer(serializers.ModelSerializer):
     party_name = serializers.CharField(source='party.name', read_only=True)
-    balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
 
     class Meta:
         model = Invoice
         fields = (
-            'id', 'party', 'party_name', 'direction', 'total_amount', 'issued_date',
-            'due_date', 'is_paid', 'balance'
+            'id', 'party', 'party_name', 'direction', 'total', 'issue_date',
+            'due_date', 'amount_due'
         )
 
 
@@ -125,6 +82,8 @@ class TransactionBriefSerializer(serializers.ModelSerializer):
 class PartyDebtSummarySerializer(serializers.Serializer):
     party_id = serializers.IntegerField()
     party_name = serializers.CharField()
+    party_email = serializers.CharField(allow_blank=True, allow_null=True)
+    party_phone = serializers.CharField(allow_blank=True, allow_null=True)
     invoice_count = serializers.IntegerField()
     total_invoiced = serializers.DecimalField(max_digits=12, decimal_places=2)
     total_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
@@ -145,6 +104,41 @@ class RequisitionSerializer(serializers.ModelSerializer):
         model = Requisition
         fields = '__all__'
 
+
+class UserSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ("id", "username", "first_name", "last_name")
+
+
+class RequisitionReadSerializer(serializers.ModelSerializer):
+    # Return names directly for easy display
+    requested_by = serializers.SerializerMethodField()
+    approved_by = serializers.SerializerMethodField()
+    # Also expose explicit name fields for clarity if needed by UI
+    requested_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Requisition
+        fields = '__all__'
+
+    def _name(self, user: User | None):
+        if not user:
+            return None
+        return (user.first_name or user.username)
+
+    def get_requested_by_name(self, obj):
+        return self._name(getattr(obj, 'requested_by', None))
+
+    def get_approved_by_name(self, obj):
+        return self._name(getattr(obj, 'approved_by', None))
+
+    def get_requested_by(self, obj):
+        return self.get_requested_by_name(obj)
+
+    def get_approved_by(self, obj):
+        return self.get_approved_by_name(obj)
 
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -216,12 +210,6 @@ class PartyWriteField(serializers.PrimaryKeyRelatedField):
         return super().to_internal_value(data)
 
 
-class PartySerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Party
-        fields = '__all__'
-
-
 class InvoiceListSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -230,18 +218,50 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         fields = ['id', 'number', 'direction', 'issue_date', 'due_date', 'currency',
                   'total', 'paid_amount', 'amount_due', 'party', 'document']
 
+
+class InvoiceItemWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = InvoiceItem
+        fields = ('name', 'description', 'quantity', 'unit_cost')
+
+
 class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
     party = PartyWriteField(queryset=Party.objects.all())
+    items = InvoiceItemWriteSerializer(many=True, required=False)
     class Meta:
         model = Invoice
         fields = ['number', 'direction', 'issue_date', 'due_date', 'currency',
-                  'subtotal', 'tax', 'discount', 'total', 'party', 'document']
+                  'subtotal', 'tax', 'discount', 'total', 'party', 'document', 'items']
+
+    def create(self, validated_data):
+        items = validated_data.pop('items', None)
+        invoice = Invoice.objects.create(**validated_data)
+        if items:
+            for it in items:
+                InvoiceItem.objects.create(invoice=invoice, **it)
+            invoice.update_total()
+        else:
+            if invoice.total is None:
+                raise serializers.ValidationError({'total': 'Total is required when no items are provided'})
+        return invoice
+
+    def update(self, instance, validated_data):
+        items = validated_data.pop('items', None)
+        for attr, val in validated_data.items():
+            setattr(instance, attr, val)
+        instance.save()
+        if items is not None:
+            instance.items.all().delete()
+            for it in items:
+                InvoiceItem.objects.create(invoice=instance, **it)
+            instance.update_total()
+        return instance
 
 
 class PaymentCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
-        fields = ['amount', 'account', 'method', 'date', 'note']
+        fields = ['amount', 'account', 'method', 'date', 'notes']
 
     def create(self, validated_data):
         invoice = self.context['invoice']

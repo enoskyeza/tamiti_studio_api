@@ -1,43 +1,44 @@
-from django.db import transaction
-from django.core.exceptions import ValidationError
 from decimal import Decimal
-from common.enums import TransactionType, InvoiceDirection
+from django.core.exceptions import ValidationError
+from django.db import transaction as db_transaction
 
-from finance.models import Payment, Transaction
+from finance.models import Payment, Transaction, Invoice
+from common.enums import TransactionType, PaymentMethod, InvoiceDirection
+
 
 class FinanceService:
     @staticmethod
-    @transaction.atomic
-    def record_invoice_payment(*, invoice, amount, account, method, date=None, note=None, created_by=None):
-        amount = Decimal(amount)
-        invoice = invoice.__class__.objects.with_paid_and_due().get(pk=invoice.pk)
-
+    @db_transaction.atomic
+    def record_invoice_payment(*, invoice: Invoice, amount, account=None, method=None, date=None, notes: str = '', created_by=None) -> Payment:
+        amount = Decimal(str(amount))
         if amount <= 0:
-            raise ValidationError("Amount must be > 0.")
+            raise ValidationError({'amount': 'Payment amount must be greater than zero'})
         if amount > invoice.amount_due:
-            raise ValidationError("Payment exceeds amount due.")
+            raise ValidationError({'amount': 'Payment exceeds amount due'})
 
+        # Payment direction follows cash flow: paying supplier (incoming invoice) is outgoing; collecting from customer (outgoing invoice) is incoming
         payment = Payment.objects.create(
-            invoice=invoice,
+            direction='outgoing' if invoice.direction == InvoiceDirection.INCOMING else 'incoming',
             amount=amount,
-            account=account,
-            method=method,
-            date=date or timezone.now().date(),
-            note=note or f"Payment for invoice {invoice.number}",
-            created_by=created_by,
-        )
-
-        tx_type = TransactionType.EXPENSE if invoice.direction == InvoiceDirection.INCOMING else TransactionType.INCOME
-
-        Transaction.objects.create(
             party=invoice.party,
-            amount=amount,
-            type=tx_type,
+            invoice=invoice,
             account=account,
-            date=payment.date,
-            currency=invoice.currency,
-            description=payment.note,
-            reference=f"INV:{invoice.number}/PAY:{payment.pk}",
+            notes=notes or '',
+            method=method or PaymentMethod.CASH,
         )
 
+        # Map invoice direction to transaction type
+        # Paying INCOMING invoice => EXPENSE; Paying OUTGOING invoice => INCOME
+        tx_type = TransactionType.EXPENSE if invoice.direction == InvoiceDirection.INCOMING else TransactionType.INCOME
+        tx = Transaction.objects.create(
+            type=tx_type,
+            amount=amount,
+            description=notes or f"Payment for invoice {invoice.number}",
+            account=account,
+            related_invoice=invoice,
+            related_payment=payment,
+            is_automated=True,
+        )
+        payment.transaction = tx
+        payment.save(update_fields=['transaction'])
         return payment

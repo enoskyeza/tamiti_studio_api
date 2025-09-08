@@ -6,9 +6,12 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django_filters import rest_framework as df_filters
 from django.db import models as dj_models
 from django.utils import timezone
-from django.db.models import Sum, Count, F, DecimalField, Value
+from django.db.models import Sum, Count, F, DecimalField, Value, OuterRef, Subquery, Prefetch
 from django.db.models.functions import Coalesce
 from finance.models import *
+from common.enums import InvoiceDirection
+from finance.services import FinanceService
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from finance.serializers import *
 from decimal import Decimal
 
@@ -17,7 +20,8 @@ class BaseModelViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     ordering_fields = '__all__'
-    search_fields = '__all__'
+    # Do not set a global search_fields; define per-view to avoid DRF errors
+    search_fields = []
 
     def get_filterset_class(self):
         model = self.get_queryset().model
@@ -46,19 +50,33 @@ class AccountViewSet(BaseModelViewSet):
 
 
 class InvoiceViewSet(BaseModelViewSet):
-    queryset = Invoice.objects.all()
-    serializer_class = InvoiceSerializer
+    queryset = Invoice.objects.all().select_related('party')
+    filterset_fields = ['direction', 'party', 'issue_date', 'due_date', 'number']
+    search_fields = ['number', 'party__name']
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
 
-    @action(detail=False, methods=['get'])
-    def unpaid(self, request):
-        unpaid = self.queryset.filter(is_paid=False)
-        serializer = self.get_serializer(unpaid, many=True)
-        return Response(serializer.data)
+    def get_serializer_class(self):
+        if self.action in ('create', 'update', 'partial_update'):
+            return InvoiceCreateUpdateSerializer
+        return InvoiceListSerializer
+
+    @action(detail=True, methods=['post'])
+    def pay(self, request, pk=None):
+        invoice = self.get_object()
+        s = PaymentCreateSerializer(data=request.data, context={'invoice': invoice, 'request': request})
+        s.is_valid(raise_exception=True)
+        payment = s.save()
+        return Response({'id': payment.pk, 'invoice': invoice.pk, 'amount': str(payment.amount)}, status=201)
 
 
 class RequisitionViewSet(BaseModelViewSet):
-    queryset = Requisition.objects.all()
+    queryset = Requisition.objects.select_related('requested_by', 'approved_by').all()
     serializer_class = RequisitionSerializer
+
+    def get_serializer_class(self):
+        if self.action in ('list', 'retrieve', 'pending'):
+            return RequisitionReadSerializer
+        return RequisitionSerializer
 
     @action(detail=False, methods=['get'])
     def pending(self, request):
@@ -100,13 +118,10 @@ class TransactionViewSet(BaseModelViewSet):
         return qs.order_by('-date')
 
 
-class PaymentViewSet(BaseModelViewSet):
+class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [permissions.IsAuthenticated]
     queryset = Payment.objects.select_related('invoice', 'account', 'transaction')
     serializer_class = PaymentSerializer
-
-    def perform_create(self, serializer):
-        payment = serializer.save()
-        # additional logic already handled in model save()
 
     @action(detail=False, methods=['get'])
     def by_goal(self, request):
@@ -126,23 +141,25 @@ class QuotationViewSet(BaseModelViewSet):
         quote = self.get_object()
         if quote.status == 'accepted':
             return Response({"detail": "Quotation already accepted"}, status=status.HTTP_400_BAD_REQUEST)
-
-        due_date = request.data.get('due_date') or (timezone.now().date())
-        invoice = Invoice.objects.create(
-            party=quote.party,
-            direction='incoming',
-            total_amount=quote.total_amount,
-            description=quote.description,
-            issued_date=timezone.now().date(),
-            due_date=due_date,
-            is_paid=False,
-        )
         quote.status = 'accepted'
         quote.save(update_fields=['status'])
-        return Response({
-            'invoice_id': invoice.id,
-            'invoice_total': str(invoice.total_amount),
-        }, status=status.HTTP_201_CREATED)
+        return Response({"status": "accepted", "quotation_id": quote.id})
+
+    @action(detail=True, methods=['post'], url_path='create-invoice')
+    def create_invoice(self, request, pk=None):
+        """Optionally convert an accepted quotation into an OUTGOING invoice."""
+        quote = self.get_object()
+        if quote.status != 'accepted':
+            return Response({"detail": "Quotation must be accepted before creating an invoice."}, status=status.HTTP_400_BAD_REQUEST)
+        due_date = request.data.get('due_date') or timezone.now().date()
+        invoice = Invoice.objects.create(
+            party=quote.party,
+            direction=InvoiceDirection.OUTGOING,
+            total=quote.total_amount,
+            issue_date=timezone.now().date(),
+            due_date=due_date,
+        )
+        return Response({'invoice_id': invoice.id, 'invoice_total': str(invoice.total)}, status=status.HTTP_201_CREATED)
 
 
 class ReceiptViewSet(BaseModelViewSet):
@@ -151,15 +168,15 @@ class ReceiptViewSet(BaseModelViewSet):
 
     def perform_create(self, serializer):
         receipt = serializer.save()
-        # If no payment linked, create one for consistency and accounting
-        if not receipt.payment:
-            payment = Payment.objects.create(
-                direction='incoming',
-                amount=receipt.amount,
-                party=receipt.party,
+        # If linked to an invoice, record payment via FinanceService (ensures Transaction is created)
+        if receipt.invoice and not receipt.payment:
+            payment = FinanceService.record_invoice_payment(
                 invoice=receipt.invoice,
+                amount=receipt.amount,
                 account=receipt.account,
+                method=receipt.method,
                 notes=receipt.notes,
+                created_by=getattr(self.request, 'user', None),
             )
             receipt.payment = payment
             receipt.save(update_fields=['payment'])
@@ -181,18 +198,18 @@ class ReceiptItemViewSet(BaseModelViewSet):
 
 
 class DebtsViewSet(viewsets.ViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
 
     def _aggregate_by_party(self, direction: str):
         # Summarize unpaid invoices by party for the given direction
-        base_qs = Invoice.objects.filter(direction=direction, is_paid=False)
+        base_qs = Invoice.objects.unpaid().filter(direction=direction)
         aggregated = (
             base_qs
-            .values('party', 'party__name')
+            .values('party', 'party__name', 'party__email', 'party__phone')
             .annotate(
                 invoice_count=Count('id', distinct=True),
                 total_invoiced=Coalesce(
-                    Sum('total_amount'),
+                    Sum('total'),
                     Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
                     output_field=DecimalField(max_digits=12, decimal_places=2)
                 ),
@@ -212,6 +229,8 @@ class DebtsViewSet(viewsets.ViewSet):
             results.append({
                 'party_id': row['party'],
                 'party_name': row['party__name'],
+                'party_email': row['party__email'],
+                'party_phone': row['party__phone'],
                 'invoice_count': row['invoice_count'],
                 'total_invoiced': row['total_invoiced'],
                 'total_paid': row['total_paid'],
@@ -221,15 +240,15 @@ class DebtsViewSet(viewsets.ViewSet):
 
     @action(detail=False, methods=['get'])
     def debtors(self, request):
-        """Parties owing us (AR): direction='incoming', unpaid."""
-        data = self._aggregate_by_party(direction='incoming')
+        """Parties owing us (AR): direction='outgoing', unpaid."""
+        data = self._aggregate_by_party(direction='outgoing')
         serializer = PartyDebtSummarySerializer(data, many=True)
         return Response(serializer.data)
 
     @action(detail=False, methods=['get'])
     def creditors(self, request):
-        """Parties owing us (AR): direction='incoming', unpaid."""
-        data = self._aggregate_by_party(direction='outgoing')
+        """Parties we owe (AP): direction='incoming', unpaid."""
+        data = self._aggregate_by_party(direction='incoming')
         serializer = PartyDebtSummarySerializer(data, many=True)
         return Response(serializer.data)
 
@@ -245,14 +264,14 @@ class DebtsViewSet(viewsets.ViewSet):
         except Party.DoesNotExist:
             return Response({"detail": "Party not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        invoices = (
+        invoices_qs = (
             Invoice.objects
             .filter(party=party, direction=direction)
             .prefetch_related('payments')
-            .order_by('-issued_date')
+            .order_by('-issue_date')
         )
-        # Outstanding total across unpaid invoices
-        outstanding_total = sum((inv.balance for inv in invoices if not inv.is_paid), start=Decimal('0'))
+        invoices = [inv for inv in invoices_qs if inv.amount_due > 0]
+        outstanding_total = sum((inv.amount_due for inv in invoices), start=Decimal('0'))
 
         # Payments for these invoices
         payments = Payment.objects.filter(invoice__in=invoices).order_by('-created_at')
@@ -262,12 +281,13 @@ class DebtsViewSet(viewsets.ViewSet):
         ).order_by('-date')
 
         payload = {
-            'party': PartySerializer(party).data,
+            'party': party,
             'direction': direction,
             'outstanding_total': outstanding_total,
-            'invoices': InvoiceBriefSerializer(invoices, many=True).data,
-            'payments': PaymentBriefSerializer(payments, many=True).data,
-            'transactions': TransactionBriefSerializer(transactions, many=True).data,
+            # Pass model instances; PartyDebtDetailSerializer handles nested serialization
+            'invoices': invoices,
+            'payments': payments,
+            'transactions': transactions,
         }
 
         return Response(PartyDebtDetailSerializer(payload).data)
@@ -310,50 +330,60 @@ class PartyFinanceViewSet(viewsets.ReadOnlyModelViewSet):
     Returns parties with unpaid invoices (nested) + total_due per party.
     """
     serializer_class = PartyWithUnpaidSerializer
+    permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         role = (self.request.query_params.get('role') or 'debtors').lower()
         direction = InvoiceDirection.OUTGOING if role == 'debtors' else InvoiceDirection.INCOMING
 
-        inv_unpaid = Invoice.objects.unpaid().filter(direction=direction)
+        # Unpaid invoices for SQL-only subquery usage (safe to use unpaid())
+        inv_unpaid_sub = Invoice.objects.unpaid().filter(direction=direction)
+        # Prefetch queryset: avoid unpaid() to prevent 'amount_due' annotation conflicting with @property
+        inv_prefetch = (
+            Invoice.objects.filter(direction=direction)
+            .annotate(
+                _paid=Coalesce(
+                    Sum('payments__amount'),
+                    Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                )
+            )
+            .annotate(_due=F('total') - F('_paid'))
+            .filter(_due__gt=0)
+            .order_by('-issue_date')
+        )
 
-        # total_due per party via Subquery (fast & precise)
         per_party_total_due = (
-            inv_unpaid.filter(party=OuterRef('pk'))
+            inv_unpaid_sub.filter(party=OuterRef('pk'))
             .values('party')
-            .annotate(td=Sum('amount_due'))
+            .annotate(
+                total_invoiced=Coalesce(
+                    Sum('total'),
+                    Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+                total_paid=Coalesce(
+                    Sum('payments__amount'),
+                    Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                    output_field=DecimalField(max_digits=12, decimal_places=2),
+                ),
+            )
+            .annotate(td=F('total_invoiced') - F('total_paid'))
             .values('td')[:1]
         )
 
-        qs = (Party.objects
-              .filter(invoices__in=inv_unpaid)
-              .distinct()
-              .annotate(
-                  total_due=Coalesce(
-                      Subquery(per_party_total_due, output_field=DecimalField(max_digits=12, decimal_places=2)),
-                      V(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
-                  )
-              )
-              .prefetch_related(
-                  Prefetch('invoices', queryset=inv_unpaid.order_by('-issue_date'), to_attr='unpaid_invoices')
-              ))
+        qs = (
+            Party.objects
+            .filter(invoices__in=inv_prefetch)
+            .distinct()
+            .annotate(
+                total_due=Coalesce(
+                    Subquery(per_party_total_due, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                    Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                )
+            )
+            .prefetch_related(
+                Prefetch('invoices', queryset=inv_prefetch, to_attr='unpaid_invoices')
+            )
+        )
         return qs
-
-
-class InvoiceViewSet(BaseModelViewSet):
-    queryset = Invoice.objects.all()
-    filterset_fields = ['direction', 'party', 'issue_date', 'due_date']
-    search_fields = ['number', 'party__name']
-
-    def get_serializer_class(self):
-        if self.action in ('create', 'update', 'partial_update'):
-            return InvoiceCreateUpdateSerializer
-        return InvoiceListSerializer
-
-    @action(detail=True, methods=['post'])
-    def pay(self, request, pk=None):
-        invoice = self.get_object()
-        s = PaymentCreateSerializer(data=request.data, context={'invoice': invoice, 'request': request})
-        s.is_valid(raise_exception=True)
-        payment = s.save()
-        return Response({'id': payment.pk, 'invoice': invoice.pk, 'amount': str(payment.amount)}, status=201)

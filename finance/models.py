@@ -60,16 +60,17 @@ def invoice_upload_path(instance, filename):
     pid = instance.party_id or 'unknown'
     return f"invoices/{year}/party_{pid}/{filename}"
 
+
 class InvoiceQuerySet(models.QuerySet):
     def with_paid_and_due(self):
         return self.annotate(
-            paid_amount=Coalesce(
+            paid_amount_agg=Coalesce(
                 Sum('payments__amount'),
                 V(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
                 output_field=DecimalField(max_digits=12, decimal_places=2),
             ),
         ).annotate(
-            amount_due=F('total') - F('paid_amount')
+            amount_due=F('total') - F('paid_amount_agg')
         )
 
     def unpaid(self):
@@ -79,15 +80,15 @@ class InvoiceQuerySet(models.QuerySet):
 class Invoice(BaseModel):
     party = models.ForeignKey('finance.Party', related_name='invoices', on_delete=models.PROTECT)
     direction = models.CharField(max_length=20, choices=InvoiceDirection.choices)
-    number = models.CharField(max_length=50, unique=True)
+    number = models.CharField(max_length=50, blank=True, null=True, unique=True)
     issue_date = models.DateField(default=timezone.now)
     due_date = models.DateField(blank=True, null=True)
     currency = models.CharField(max_length=10, choices=Currency.choices, default=Currency.Uganda)
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     tax = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     discount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    total = models.DecimalField(max_digits=12, decimal_places=2)
-    document = models.FileField(upload_to=invoice_upload_path, blank=True, null=True) image
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    document = models.FileField(upload_to=invoice_upload_path, blank=True, null=True)
 
     objects = InvoiceQuerySet.as_manager()
 
@@ -104,34 +105,12 @@ class Invoice(BaseModel):
     def amount_due(self):
         return max(self.total - (self.paid_amount or 0), 0)
 
-
-class LegacyInvoice(BaseModel):
-    party = models.ForeignKey(Party, on_delete=models.CASCADE)
-    direction = models.CharField(max_length=10, choices=InvoiceDirection.choices)
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    description = models.TextField(blank=True)
-    issued_date = models.DateField()
-    due_date = models.DateField()
-    is_paid = models.BooleanField(default=False)
-    related_file = models.FileField(upload_to='invoices/', blank=True, null=True)
-
-    def __str__(self):
-        return f"Invoice #{self.id} - {self.party.name}"
-
-    @property
-    def balance(self):
-        paid = self.payments.aggregate(total=Sum('amount'))['total'] or 0
-        return self.total_amount - paid
-
-    def check_paid_status(self):
-        if self.balance <= 0:
-            self.is_paid = True
-            self.save(update_fields=['is_paid'])
-
     def update_total(self):
-        total = self.items.aggregate(total=Sum('amount'))['total'] or 0
-        self.total_amount = total
-        self.save(update_fields=['total_amount'])
+        items_total = self.items.aggregate(total=Sum('amount'))['total'] or 0
+        if self.items.exists():
+            self.subtotal = items_total
+            self.total = (self.subtotal + self.tax) - self.discount
+            self.save(update_fields=['subtotal', 'total'])
 
 
 class Goal(BaseModel):
@@ -190,6 +169,7 @@ class Payment(BaseModel):
     invoice = models.ForeignKey(Invoice, null=True, blank=True, related_name='payments', on_delete=models.SET_NULL)
     requisition = models.OneToOneField(Requisition, null=True, blank=True, on_delete=models.SET_NULL)
     account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True)
+    method = models.CharField(max_length=20, choices=PaymentMethod.choices, default=PaymentMethod.CASH)
     transaction = models.OneToOneField(
         'Transaction', null=True, blank=True, on_delete=models.SET_NULL,
         related_name='linked_payment'
@@ -199,30 +179,8 @@ class Payment(BaseModel):
     goal = models.ForeignKey(Goal, null=True, blank=True, related_name='payments', on_delete=models.SET_NULL)
 
     def save(self, *args, **kwargs):
-        creating = self._state.adding
+        # Keep Payment side-effects minimal; FinanceService handles transactions and invoice state
         super().save(*args, **kwargs)
-
-        if creating and not self.transaction:
-            tx_type = 'income' if self.direction == 'incoming' else 'expense'
-
-            tx = Transaction.objects.create(
-                type=tx_type,
-                amount=self.amount,
-                description=self.notes or f"{tx_type.capitalize()} payment by {self.party}",
-                account=self.account,
-                related_invoice=self.invoice,
-                related_requisition=self.requisition,
-                related_payment=self,
-                date=self.created_at,
-                is_automated=True,
-            )
-            self.transaction = tx
-            super().save(update_fields=['transaction'])
-
-        if self.invoice:
-            self.invoice.check_paid_status()
-        if self.goal:
-            self.goal.update_progress()
 
 
 class Transaction(BaseModel):
