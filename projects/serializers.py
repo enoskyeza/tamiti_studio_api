@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from projects.models import Project, ProjectMember, Milestone, ProjectComment
+from projects.models import Project, ProjectMember, Milestone
 from tasks.models import Task
 
 
@@ -8,15 +8,6 @@ class MilestoneSerializer(serializers.ModelSerializer):
         model = Milestone
         fields = '__all__'
         read_only_fields = ('achievement_date', 'created_at')
-
-
-class ProjectCommentSerializer(serializers.ModelSerializer):
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
-
-    class Meta:
-        model = ProjectComment
-        fields = '__all__'
-        read_only_fields = ('user', 'created_at')
 
 
 class ProjectMemberSerializer(serializers.ModelSerializer):
@@ -50,7 +41,7 @@ class ProjectSummarySerializer(serializers.ModelSerializer):
 class ProjectSerializer(serializers.ModelSerializer):
     tasks = serializers.SerializerMethodField()
     milestones = MilestoneSerializer(many=True, read_only=True)
-    comments = ProjectCommentSerializer(many=True, read_only=True)
+    comments = serializers.SerializerMethodField()
     members = ProjectMemberSerializer(many=True, read_only=True)
     task_count = serializers.SerializerMethodField()
     completed_task_count = serializers.SerializerMethodField()
@@ -70,3 +61,8 @@ class ProjectSerializer(serializers.ModelSerializer):
     def get_tasks(self, obj):
         from tasks.serializers import TaskSerializer  # avoid circular import
         return TaskSerializer(obj.tasks.all(), many=True).data
+
+    def get_comments(self, obj):
+        # Use global comments serializer lazily to avoid circular imports
+        from comments.serializers import CommentSerializer
+        return CommentSerializer(obj.comments.all(), many=True).data

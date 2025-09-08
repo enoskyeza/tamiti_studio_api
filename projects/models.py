@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.contenttypes.fields import GenericRelation
 from django.utils import timezone
 
 from core.models import BaseModel
@@ -7,6 +8,7 @@ from common.enums import ProjectStatus, ProjectRole, PriorityLevel
 
 
 class Project(BaseModel):
+    comments = GenericRelation('comments.Comment', related_query_name='projects')
     name = models.CharField(max_length=255)
     description = models.TextField(blank=True)
     client_name = models.CharField(max_length=255, blank=True)
@@ -35,7 +37,7 @@ class Project(BaseModel):
 
     @property
     def is_overdue(self):
-        if self.due_date and self.status not in ['completed', 'cancelled']:
+        if self.due_date and self.status not in [ProjectStatus.COMPLETE, ProjectStatus.CANCELLED]:
             return timezone.now().date() > self.due_date
         return False
 
@@ -69,11 +71,3 @@ class Milestone(BaseModel):
         super().save(*args, **kwargs)
 
 
-class ProjectComment(BaseModel):
-    project = models.ForeignKey(Project, related_name='comments', on_delete=models.CASCADE)
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    content = models.TextField()
-    is_internal = models.BooleanField(default=True)
-
-    def __str__(self):
-        return f"{self.project.name}: Comment by {self.user.username}"

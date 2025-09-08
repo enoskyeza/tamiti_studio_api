@@ -1,14 +1,20 @@
 from django.db.models import Q
+from django.contrib.contenttypes.models import ContentType
 
 from rest_framework import generics, permissions
 from django_filters.rest_framework import DjangoFilterBackend
 
 from projects.filters import ProjectFilter
-from projects.models import Project, Milestone, ProjectComment
+from projects.models import Project, Milestone
+from comments.models import Comment
+from comments.serializers import CommentSerializer
 from projects.serializers import (
     ProjectSerializer, ProjectSummarySerializer,
-    MilestoneSerializer, ProjectCommentSerializer
+    MilestoneSerializer
 )
+from tasks.models import Task
+from tasks.serializers import TaskSerializer
+from tasks.filters import TaskFilter
 
 
 class ProjectListCreateView(generics.ListCreateAPIView):
@@ -60,15 +66,38 @@ class MilestoneDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class ProjectCommentListCreateView(generics.ListCreateAPIView):
-    serializer_class = ProjectCommentSerializer
+    serializer_class = CommentSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return ProjectComment.objects.filter(
-            project_id=self.kwargs['project_id'],
-            project__created_by=self.request.user
-        )
+        project = Project.objects.filter(
+            id=self.kwargs['project_id'], created_by=self.request.user
+        ).first()
+        if not project:
+            return Comment.objects.none()
+        # comments bound to this project via GFK
+        return Comment.objects.filter(
+            content_type__app_label='projects',
+            content_type__model='project',
+            object_id=project.id,
+            is_deleted=False,
+        ).select_related('author')
 
     def perform_create(self, serializer):
         project = Project.objects.get(id=self.kwargs['project_id'], created_by=self.request.user)
-        serializer.save(user=self.request.user, project=project)
+        serializer.save(
+            author=self.request.user,
+            content_type=ContentType.objects.get(app_label='projects', model='project'),
+            object_id=project.id,
+        )
+
+
+class ProjectTaskListView(generics.ListAPIView):
+    """List tasks for a given project with same filters as /tasks"""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = TaskSerializer
+    filter_backends = [DjangoFilterBackend]
+    filterset_class = TaskFilter
+
+    def get_queryset(self):
+        return Task.objects.filter(project_id=self.kwargs['project_id'], project__created_by=self.request.user)

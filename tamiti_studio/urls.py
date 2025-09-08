@@ -32,14 +32,18 @@ urlpatterns = [
     path('api/tasks/', include('tasks.urls')),
     path('api/users/', include('users.urls')),
     path('api/field/', include('field.urls')),
+    # Alias sales endpoints to the field app for frontend compatibility
+    path('api/sales/', include('field.urls')),
     path('api/projects/', include('projects.urls')),
     path('api/finance/', include('finance.urls')),
     path('api/assistants/', include('assistants.urls')),
     path('api/accounts/', include('accounts.urls')),
     path('api/social/', include('social.urls')),
     path('api/content/', include('content.urls')),
+    path('api/comments/', include('comments.urls')),
     path('api/notifications/', include('notifications.urls', namespace='notifications')),
     path('api/dashboard/', include('dashboard.urls')),
+    path('api/planner/', include('planner.urls')),
 
     # swagger endpoints
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
