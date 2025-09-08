@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Channel, ChannelMember, ChannelMessage, MessageFileUpload,
-    DirectThread, DirectMessage, DirectMessageFile
+    DirectThread, DirectMessage, DirectMessageFile, DirectThreadReadState
 )
 
 
@@ -25,6 +25,7 @@ class ChannelMessageAdmin(admin.ModelAdmin):
 class ChannelMemberInline(admin.TabularInline):
     model = ChannelMember
     extra = 0
+    readonly_fields = ['joined_at', 'last_read_at']
 
 
 class ChannelAdmin(admin.ModelAdmin):
@@ -62,3 +63,4 @@ admin.site.register(DirectThread, DirectThreadAdmin)
 admin.site.register(DirectMessage, DirectMessageAdmin)
 admin.site.register(MessageFileUpload)
 admin.site.register(DirectMessageFile)
+admin.site.register(DirectThreadReadState)
