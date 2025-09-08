@@ -92,6 +92,22 @@ class OriginApp(BaseEnum):
     PROJECTS = 'projects', 'Projects'
     DIGITAL = 'digital', 'Digital'
     LEADS = 'leads', 'Leads'
+    FINANCE = 'finance', 'Finance'
+    FIELD = 'field', 'Field'
+
+
+class EnergyLevel(BaseEnum):
+    LOW = 'low', 'Low'
+    MEDIUM = 'medium', 'Medium'
+    HIGH = 'high', 'High'
+
+
+class BlockStatus(BaseEnum):
+    PLANNED = 'planned', 'Planned'
+    COMMITTED = 'committed', 'Committed'
+    IN_PROGRESS = 'in_progress', 'In Progress'
+    DONE = 'done', 'Done'
+    SKIPPED = 'skipped', 'Skipped'
 
 
 class LeadStatus(BaseEnum):
@@ -166,3 +182,19 @@ class AssetType(BaseEnum):
     DOCUMENT = "document", "Document"
     OTHER = "other", "Other"
 
+
+class QuotationStatus(BaseEnum):
+    DRAFT = 'draft', 'Draft'
+    SENT = 'sent', 'Sent'
+    ACCEPTED = 'accepted', 'Accepted'
+    REJECTED = 'rejected', 'Rejected'
+    EXPIRED = 'expired', 'Expired'
+
+
+class PaymentMethod(BaseEnum):
+    CASH = 'cash', 'Cash'
+    BANK_TRANSFER = 'bank_transfer', 'Bank Transfer'
+    MOBILE_MONEY = 'mobile_money', 'Mobile Money'
+    CARD = 'card', 'Card'
+    CHEQUE = 'cheque', 'Cheque'
+    OTHER = 'other', 'Other'
