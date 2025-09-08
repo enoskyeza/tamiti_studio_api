@@ -1,25 +1,34 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 from typing import List, Tuple
 
 from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.core.cache import cache
 
-from rest_framework import permissions, generics, status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework import permissions, generics, status, viewsets
+from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 
 from accounts.models import Department
 from tasks.models import Task
-from planner.models import BreakPolicy, AvailabilityTemplate, CalendarEvent, TimeBlock
-from planner.serializers import TimeBlockSerializer, CalendarEventSerializer
+from planner.models import (
+    BreakPolicy, AvailabilityTemplate, CalendarEvent, TimeBlock,
+    DailyReview, WorkGoal, ProductivityInsight
+)
+from planner.serializers import (
+    TimeBlockSerializer, CalendarEventSerializer, DailyReviewSerializer,
+    WorkGoalSerializer, ProductivityInsightSerializer
+)
+from planner.services import SmartScheduler, ProductivityAnalyzer, SmartRescheduler
 
 
 def _preview_schedule(user, scope: str, date_str: str) -> dict:
-    """Compute a schedule preview dictionary without touching HTTP layer.
-
+    """Legacy schedule preview - kept for backward compatibility
+    
+    Compute a schedule preview dictionary without touching HTTP layer.
     Returns a dict matching PlannerPreviewResponse in API guide.
     Raises ValueError for invalid dates.
     """
@@ -249,14 +258,30 @@ def _pack(time_windows: List[Tuple[datetime, datetime]], tasks: List[Task], focu
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def schedule_preview(request):
+    """Enhanced schedule preview with smart algorithms"""
     scope = request.data.get('scope', 'day')
     date_str = request.data.get('date')
+    use_smart = request.data.get('smart', True)  # Use smart scheduler by default
+    
     if not date_str:
         return Response({'error': 'date is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
     try:
-        data = _preview_schedule(request.user, scope, date_str)
+        target_date = parse_date(date_str)
+        if not target_date:
+            raise ValueError("Invalid date format")
+        
+        if use_smart:
+            # Use enhanced smart scheduler
+            scheduler = SmartScheduler(request.user)
+            data = scheduler.generate_optimized_schedule(scope, target_date)
+        else:
+            # Fallback to original algorithm
+            data = _preview_schedule(request.user, scope, date_str)
+            
     except ValueError:
         return Response({'error': 'invalid date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+    
     return Response(data)
 
 
@@ -292,8 +317,28 @@ def schedule_commit(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def replan(request):
-    # Alias to preview for now
-    return schedule_preview(request)
+    """Smart replanning with rescheduling of incomplete tasks"""
+    from_date_str = request.data.get('from_date')
+    to_date_str = request.data.get('to_date')
+    
+    if not from_date_str:
+        return Response({'error': 'from_date is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        from_date = parse_date(from_date_str)
+        to_date = parse_date(to_date_str) if to_date_str else None
+        
+        if not from_date:
+            raise ValueError("Invalid from_date format")
+        
+        # Use smart rescheduler
+        rescheduler = SmartRescheduler(request.user)
+        result = rescheduler.reschedule_incomplete_tasks(from_date, to_date)
+        
+        return Response(result)
+        
+    except ValueError as e:
+        return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class BlockListView(generics.ListAPIView):
@@ -343,3 +388,231 @@ class CalendarEventDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     def get_queryset(self):
         return CalendarEvent.objects.filter(owner_user=self.request.user)
+
+
+class DailyReviewViewSet(viewsets.ModelViewSet):
+    """ViewSet for daily reviews and productivity tracking"""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = DailyReviewSerializer
+
+    def get_queryset(self):
+        return DailyReview.objects.filter(owner_user=self.request.user)
+
+    def perform_create(self, serializer):
+        serializer.save(owner_user=self.request.user)
+
+    @action(detail=False, methods=['post'])
+    def compute_metrics(self, request):
+        """Compute productivity metrics for a specific date"""
+        date_str = request.data.get('date')
+        if not date_str:
+            return Response({'error': 'date is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            target_date = parse_date(date_str)
+            if not target_date:
+                raise ValueError("Invalid date format")
+            
+            analyzer = ProductivityAnalyzer(request.user)
+            review = analyzer.compute_daily_review(target_date)
+            
+            return Response(DailyReviewSerializer(review).data)
+            
+        except ValueError:
+            return Response({'error': 'invalid date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=False, methods=['get'])
+    def productivity_stats(self, request):
+        """Get productivity statistics and trends"""
+        days = int(request.query_params.get('days', 30))
+        start_date = timezone.now().date() - timedelta(days=days)
+        
+        reviews = self.get_queryset().filter(date__gte=start_date)
+        
+        if not reviews.exists():
+            return Response({
+                'avg_productivity_score': 0,
+                'avg_completion_rate': 0,
+                'current_streak': 0,
+                'total_focus_hours': 0,
+                'trend': 'no_data'
+            })
+        
+        # Calculate aggregated stats
+        total_reviews = reviews.count()
+        avg_productivity = sum(float(r.productivity_score) for r in reviews) / total_reviews
+        avg_completion = sum(float(r.completion_rate) for r in reviews) / total_reviews
+        total_focus_minutes = sum(r.focus_time_minutes for r in reviews)
+        current_streak = reviews.order_by('-date').first().current_streak
+        
+        # Calculate trend (last 7 days vs previous 7 days)
+        recent_reviews = reviews.filter(date__gte=timezone.now().date() - timedelta(days=7))
+        older_reviews = reviews.filter(
+            date__gte=timezone.now().date() - timedelta(days=14),
+            date__lt=timezone.now().date() - timedelta(days=7)
+        )
+        
+        trend = 'stable'
+        if recent_reviews.exists() and older_reviews.exists():
+            recent_avg = sum(float(r.productivity_score) for r in recent_reviews) / recent_reviews.count()
+            older_avg = sum(float(r.productivity_score) for r in older_reviews) / older_reviews.count()
+            
+            if recent_avg > older_avg + 5:
+                trend = 'improving'
+            elif recent_avg < older_avg - 5:
+                trend = 'declining'
+        
+        return Response({
+            'avg_productivity_score': round(avg_productivity, 2),
+            'avg_completion_rate': round(avg_completion, 2),
+            'current_streak': current_streak,
+            'total_focus_hours': round(total_focus_minutes / 60, 1),
+            'trend': trend,
+            'total_days': total_reviews
+        })
+
+
+class WorkGoalViewSet(viewsets.ModelViewSet):
+    """ViewSet for work goals management"""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = WorkGoalSerializer
+
+    def get_queryset(self):
+        qs = WorkGoal.objects.filter(
+            Q(owner_user=self.request.user) | 
+            Q(owner_team__in=self.request.user.staff_profile.department if hasattr(self.request.user, 'staff_profile') else [])
+        )
+        
+        # Filter by active status
+        if self.request.query_params.get('active_only', 'true').lower() == 'true':
+            qs = qs.filter(is_active=True)
+        
+        return qs.order_by('-created_at')
+
+    def perform_create(self, serializer):
+        serializer.save(owner_user=self.request.user)
+
+    @action(detail=True, methods=['post'])
+    def update_progress(self, request, pk=None):
+        """Manually trigger progress update for a goal"""
+        goal = self.get_object()
+        goal.update_progress()
+        return Response(WorkGoalSerializer(goal).data)
+
+
+class ProductivityInsightViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for productivity insights (read-only)"""
+    permission_classes = [permissions.IsAuthenticated]
+    serializer_class = ProductivityInsightSerializer
+
+    def get_queryset(self):
+        return ProductivityInsight.objects.filter(
+            owner_user=self.request.user,
+            is_active=True
+        )
+
+    @action(detail=False, methods=['post'])
+    def generate_insights(self, request):
+        """Generate fresh productivity insights"""
+        analyzer = ProductivityAnalyzer(request.user)
+        insights = analyzer.generate_productivity_insights()
+        
+        serialized_insights = {}
+        for insight_type, insight in insights.items():
+            serialized_insights[insight_type] = ProductivityInsightSerializer(insight).data
+        
+        return Response({
+            'generated_count': len(insights),
+            'insights': serialized_insights
+        })
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def bulk_reschedule(request):
+    """Bulk reschedule multiple tasks"""
+    task_ids = request.data.get('task_ids', [])
+    target_date_str = request.data.get('target_date')
+    
+    if not task_ids:
+        return Response({'error': 'task_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if not target_date_str:
+        return Response({'error': 'target_date is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    try:
+        target_date = parse_date(target_date_str)
+        if not target_date:
+            raise ValueError("Invalid target_date format")
+        
+        # Verify user has access to these tasks
+        user_tasks = Task.objects.filter(
+            Q(created_by=request.user) | Q(assigned_to=request.user) | Q(project__created_by=request.user),
+            id__in=task_ids
+        )
+        
+        if user_tasks.count() != len(task_ids):
+            return Response({'error': 'Some tasks not found or not accessible'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Clear existing future blocks
+        future_start = timezone.make_aware(datetime.combine(target_date, time.min))
+        TimeBlock.objects.filter(
+            task__in=user_tasks,
+            start__gte=future_start,
+            status='planned'
+        ).delete()
+        
+        # Generate new schedule
+        scheduler = SmartScheduler(request.user)
+        new_schedule = scheduler.generate_optimized_schedule('week', target_date)
+        
+        return Response({
+            'rescheduled_tasks': user_tasks.count(),
+            'new_schedule': new_schedule
+        })
+        
+    except ValueError:
+        return Response({'error': 'invalid target_date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def productivity_dashboard(request):
+    """Get comprehensive productivity dashboard data"""
+    # Get recent daily review
+    latest_review = DailyReview.objects.filter(owner_user=request.user).order_by('-date').first()
+    
+    # Get active work goals
+    active_goals = WorkGoal.objects.filter(
+        Q(owner_user=request.user) | Q(owner_team__in=[
+            request.user.staff_profile.department if hasattr(request.user, 'staff_profile') else None
+        ]),
+        is_active=True
+    )[:5]
+    
+    # Get productivity insights
+    insights = ProductivityInsight.objects.filter(
+        owner_user=request.user,
+        is_active=True
+    )
+    
+    # Get upcoming scheduled tasks
+    tomorrow = timezone.now().date() + timedelta(days=1)
+    tomorrow_start = timezone.make_aware(datetime.combine(tomorrow, time.min))
+    tomorrow_end = tomorrow_start + timedelta(days=1)
+    
+    upcoming_blocks = TimeBlock.objects.filter(
+        owner_user=request.user,
+        start__gte=tomorrow_start,
+        start__lt=tomorrow_end,
+        status='planned',
+        is_break=False
+    ).select_related('task')[:10]
+    
+    return Response({
+        'latest_review': DailyReviewSerializer(latest_review).data if latest_review else None,
+        'active_goals': WorkGoalSerializer(active_goals, many=True).data,
+        'insights': ProductivityInsightSerializer(insights, many=True).data,
+        'upcoming_tasks': TimeBlockSerializer(upcoming_blocks, many=True).data,
+        'dashboard_generated_at': timezone.now().isoformat()
+    })
