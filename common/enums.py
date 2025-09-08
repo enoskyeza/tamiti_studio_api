@@ -45,7 +45,7 @@ class PriorityLevel(BaseEnum):
     LOW = 'low', 'Low'
     MEDIUM = 'medium', 'Medium'
     HIGH = 'high', 'High'
-    CRITICAL = 'critical', 'Critical'
+    URGENT = 'urgent', 'Urgent'
 
 
 class PaymentCategory(BaseEnum):
@@ -67,6 +67,7 @@ class PaymentCategory(BaseEnum):
 class TaskStatus(BaseEnum):
     TODO = 'todo', 'To Do'
     IN_PROGRESS = 'in_progress', 'In Progress'
+    REVIEW = 'review', 'Review'
     DONE = 'done', 'Done'
 
 
