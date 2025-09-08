@@ -5,7 +5,9 @@ import factory
 
 from users.models import User
 from factory.django import DjangoModelFactory
-from projects.models import Project, Milestone, ProjectComment
+from projects.models import Project, Milestone
+from comments.models import Comment
+from django.contrib.contenttypes.models import ContentType
 from tasks.models import Task, TaskGroup
 from field.models import Zone, Lead, Visit, LeadAction
 from common.enums import *
@@ -74,11 +76,20 @@ class TaskGroupFactory(DjangoModelFactory):
 
 class ProjectCommentFactory(DjangoModelFactory):
     class Meta:
-        model = ProjectComment
+        model = Comment
 
-    project = factory.SubFactory(ProjectFactory)
-    user = factory.SubFactory(UserFactory)
+    author = factory.SubFactory(UserFactory)
     content = "This is a comment"
+    is_internal = True
+
+    @factory.post_generation
+    def project(self, create, extracted, **kwargs):
+        # Allow passing a project=... when building/creating; otherwise create one
+        project = extracted or ProjectFactory()
+        self.content_type = ContentType.objects.get_for_model(Project)
+        self.object_id = project.id
+        if create:
+            self.save()
 
 
 class PartyFactory(DjangoModelFactory):

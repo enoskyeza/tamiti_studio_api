@@ -39,7 +39,9 @@ def test_create_task_group():
 
 @pytest.mark.django_db
 def test_project_comment():
-    comment = ProjectCommentFactory()
-    assert comment.project is not None
-    assert comment.user is not None
+    project = ProjectFactory()
+    comment = ProjectCommentFactory(project=project)
+    assert comment.author is not None
+    assert comment.content_type.model == 'project'
+    assert comment.object_id == project.id
     assert "Comment" in str(comment)
