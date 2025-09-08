@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
-from .models import Task, TaskGroup
+from .models import Task, TaskGroup, KanbanBoard, KanbanColumn
 try:
     from planner.models import TimeBlock
 except Exception:  # planner may not be migrated yet in some envs
@@ -124,3 +124,34 @@ class TaskGroupAdmin(admin.ModelAdmin):
     search_fields = ['project__name', 'name']
     list_select_related = ('project',)
     ordering = ['project__name', 'order']
+
+
+class KanbanColumnInline(admin.TabularInline):
+    model = KanbanColumn
+    extra = 0
+    fields = ('name', 'status_mapping', 'order', 'color', 'wip_limit')
+    ordering = ('order',)
+
+
+@admin.register(KanbanBoard)
+class KanbanBoardAdmin(admin.ModelAdmin):
+    save_on_top = True
+    list_display = ['name', linkify('project'), 'created_at']
+    list_filter = ['project', 'created_at']
+    search_fields = ['name', 'project__name']
+    autocomplete_fields = ['project']
+    readonly_fields = ['created_at', 'updated_at']
+    list_select_related = ('project',)
+    inlines = [KanbanColumnInline]
+
+
+@admin.register(KanbanColumn)
+class KanbanColumnAdmin(admin.ModelAdmin):
+    save_on_top = True
+    list_display = ['name', linkify('board'), 'status_mapping', 'order', 'task_count', 'wip_limit', 'is_wip_exceeded']
+    list_filter = ['board', 'status_mapping', 'board__project']
+    search_fields = ['name', 'board__name', 'board__project__name']
+    autocomplete_fields = ['board']
+    readonly_fields = ['created_at', 'updated_at', 'task_count', 'is_wip_exceeded']
+    ordering = ['board', 'order']
+    list_select_related = ('board', 'board__project')
