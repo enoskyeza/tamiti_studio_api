@@ -16,7 +16,7 @@ CORS_ALLOW_CREDENTIALS = False
 
 MIDDLEWARE.insert(1, "whitenoise.middleware.WhiteNoiseMiddleware")
 
-INSTALLED_APPS += ["whitenoise.runserver_nostatic", "corsheaders"]
+INSTALLED_APPS += ["whitenoise.runserver_nostatic"]
 
 STATIC_ROOT = BASE_DIR / "staticfiles"
 STORAGES = {

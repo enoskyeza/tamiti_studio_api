@@ -3,7 +3,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
 from field.models import Zone, Lead, Visit, LeadAction
-from field.serializers import ZoneSerializer, LeadSerializer, VisitSerializer, LeadActionSerializer
+from field.serializers import (
+    ZoneSerializer,
+    LeadSerializer,
+    LeadReadSerializer,
+    VisitSerializer,
+    VisitReadSerializer,
+    LeadActionSerializer,
+    LeadActionReadSerializer,
+)
 
 
 class ZoneViewSet(viewsets.ModelViewSet):
@@ -22,6 +30,11 @@ class LeadViewSet(viewsets.ModelViewSet):
     search_fields = ['business_name', 'contact_name', 'contact_phone']
     ordering_fields = ['lead_score', 'priority', 'follow_up_date']
 
+    def get_serializer_class(self):
+        if self.action in ['list', 'retrieve']:
+            return LeadReadSerializer
+        return LeadSerializer
+
     @action(detail=False, methods=['get'])
     def hot(self, request):
         queryset = self.get_queryset().filter(priority__in=['high', 'critical'])
@@ -37,6 +50,11 @@ class VisitViewSet(viewsets.ModelViewSet):
     search_fields = ['business_name', 'contact_name', 'contact_phone', 'location']
     ordering_fields = ['date_time']
 
+    def get_serializer_class(self):
+        if self.action in ['list', 'retrieve']:
+            return VisitReadSerializer
+        return VisitSerializer
+
     @action(detail=True, methods=['post'])
     def convert_to_lead(self, request, pk=None):
         visit = self.get_object()
@@ -48,6 +66,11 @@ class LeadActionViewSet(viewsets.ModelViewSet):
     queryset = LeadAction.objects.select_related('lead', 'created_by')
     serializer_class = LeadActionSerializer
     permission_classes = [permissions.IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action in ['list', 'retrieve']:
+            return LeadActionReadSerializer
+        return LeadActionSerializer
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)

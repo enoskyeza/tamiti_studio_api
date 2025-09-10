@@ -50,10 +50,18 @@ class UserListSerializer(serializers.ModelSerializer):
             'staff_profile', 'customer_profile'
         ]
 
+
+class StaffRoleViewSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = StaffRole
+        fields = ['id', 'dashboard_url', 'title']
+
+
 class VirtualAssistantSerializer(serializers.ModelSerializer):
     department = serializers.StringRelatedField()
     designation = serializers.StringRelatedField()
     branch = serializers.StringRelatedField()
+    role = StaffRoleViewSerializer(read_only=True)
 
     class Meta:
         model = StaffProfile

@@ -2,7 +2,7 @@ from django.db import models
 from django.utils import timezone
 from users.models import User
 from core.models import BaseModel
-from common.enums import PriorityLevel, LeadStage, LeadSource, VisitOutcome, FollowUpType
+from common.enums import PriorityLevel, LeadStage, LeadSource, VisitOutcome, FollowUpType, LeadStatus
 
 
 class Zone(BaseModel):
@@ -19,6 +19,7 @@ class Lead(BaseModel):
     contact_name = models.CharField(max_length=100, blank=True)
     contact_phone = models.CharField(max_length=20)
     contact_email = models.EmailField(blank=True, null=True)
+    status = models.CharField(max_length=50, choices=LeadStatus.choices, default=LeadStatus.NEW)
     stage = models.CharField(max_length=50, choices=LeadStage.choices, default=LeadStage.PROSPECT)
     source = models.CharField(max_length=100, choices=LeadSource.choices, blank=True)
     zone = models.ForeignKey(Zone, on_delete=models.SET_NULL, null=True, blank=True)
@@ -40,6 +41,9 @@ class Lead(BaseModel):
 
     def is_hot_lead(self):
         return self.priority in [PriorityLevel.HIGH, PriorityLevel.CRITICAL] or self.lead_score >= 80
+
+    class Meta:
+        ordering = ['-created_at', '-id']
 
 
 class LeadAction(BaseModel):
@@ -98,3 +102,6 @@ class Visit(BaseModel):
             self.save()
             return lead
         return self.linked_lead
+
+    class Meta:
+        ordering = ['-date_time', '-created_at', '-id']

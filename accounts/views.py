@@ -1,4 +1,5 @@
 from rest_framework import viewsets, permissions, generics
+from rest_framework.filters import OrderingFilter
 from accounts.models import *
 from accounts.serializers import *
 
@@ -46,7 +47,10 @@ class UserListViewSet(viewsets.ReadOnlyModelViewSet):
 
 class VirtualAssistantListView(generics.ListAPIView):
     serializer_class = VirtualAssistantSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.AllowAny]
+    filter_backends = [OrderingFilter]
+    ordering_fields = ['id', 'name', 'created_at']
+    ordering = ['id']
 
     def get_queryset(self):
         return StaffProfile.objects.filter(
@@ -54,4 +58,4 @@ class VirtualAssistantListView(generics.ListAPIView):
             is_deleted=False
         ).select_related(
             'role', 'department', 'designation', 'branch', 'assigned_to', 'created_by'
-        )
+        ).prefetch_related('role').order_by('id')

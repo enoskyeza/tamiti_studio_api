@@ -44,6 +44,22 @@ class StaffRoleAdmin(admin.ModelAdmin):
     search_fields = ('title',)
     filter_horizontal = ('tags',)
 
-admin.site.register(Department)
-admin.site.register(Designation)
-admin.site.register(Branch)
+@admin.register(Department)
+class DepartmentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    search_fields = ('name',)
+    ordering = ('name',)
+
+
+@admin.register(Designation)
+class DesignationAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    search_fields = ('name',)
+    ordering = ('name',)
+
+
+@admin.register(Branch)
+class BranchAdmin(admin.ModelAdmin):
+    list_display = ('id', 'name')
+    search_fields = ('name',)
+    ordering = ('name',)

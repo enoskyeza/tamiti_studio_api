@@ -1,0 +1,24 @@
+# .pre-commit-config.yaml
+repos:
+  - repo: local
+    hooks:
+      - id: ban-datetime-now
+        name: Ban datetime.now/utcnow usage
+        entry: bash -c 'if git grep -nE "datetime\.(now|utcnow)\(" -- "*.py"; then echo "❌ Found datetime.now() or datetime.utcnow() usage. Use timezone.now() instead."; exit 1; fi'
+        language: system
+        pass_filenames: false
+        types: [python]
+      
+      - id: ban-pytz-usage
+        name: Ban pytz usage (use zoneinfo instead)
+        entry: bash -c 'if git grep -nE "import pytz|from pytz" -- "*.py"; then echo "❌ Found pytz usage. Use zoneinfo instead for Django 4+."; exit 1; fi'
+        language: system
+        pass_filenames: false
+        types: [python]
+      
+      - id: check-timezone-aware
+        name: Check for timezone-aware datetime usage
+        entry: bash -c 'if git grep -nE "\.replace\(tzinfo=" -- "*.py"; then echo "⚠️  Found .replace(tzinfo=) usage. Consider using timezone.make_aware() instead."; exit 1; fi'
+        language: system
+        pass_filenames: false
+        types: [python]

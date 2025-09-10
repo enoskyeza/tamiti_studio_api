@@ -54,6 +54,9 @@ class StaffProfile(BaseModel):
     created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='created_staff')
     role = models.ForeignKey('StaffRole', on_delete=models.SET_NULL, null=True, blank=True)
 
+    class Meta:
+        ordering = ['id']
+
     def __str__(self):
         return self.name or self.user.get_full_name() if self.user else "[Unlinked Staff]"
 
