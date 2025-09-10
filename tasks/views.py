@@ -1,6 +1,7 @@
 from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.filters import OrderingFilter
 from django.db.models import Q
 
 from rest_framework import generics, permissions, status
@@ -21,8 +22,15 @@ from tasks.serializers import (
 
 class TaskListCreateView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = TaskFilter
+    # Allow client ordering with a stable default
+    ordering_fields = [
+        'id', 'title', 'created_at', 'updated_at', 'due_date',
+        'status', 'priority', 'is_completed', 'kanban_position', 'position'
+    ]
+    # Keep default close to model Meta.ordering while adding tie-breakers
+    ordering = ['is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id']
 
     def get_serializer_class(self):
         return TaskCreateSerializer if self.request.method == 'POST' else TaskSerializer
@@ -49,7 +57,8 @@ class TaskListCreateView(generics.ListCreateAPIView):
         personal = self.request.query_params.get('personal')
         if personal in {'1', 'true', 'True'}:
             qs = qs.filter(project__isnull=True).filter(Q(assigned_to=user) | Q(created_by=user))
-        return qs
+        # Explicit deterministic ordering for stable pagination
+        return qs.order_by('is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
@@ -143,10 +152,16 @@ def snooze_task(request, task_id):
 class TeamTaskListView(generics.ListAPIView):
     """List tasks for a given team/department ID with full filtering support."""
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = TaskFilter
     serializer_class = TaskSerializer
+    ordering_fields = [
+        'id', 'title', 'created_at', 'updated_at', 'due_date',
+        'status', 'priority', 'is_completed', 'kanban_position', 'position'
+    ]
+    ordering = ['is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id']
 
     def get_queryset(self):
         team_id = self.kwargs['team_id']
-        return Task.objects.filter(assigned_team_id=team_id)
+        qs = Task.objects.filter(assigned_team_id=team_id)
+        return qs.order_by('is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id')

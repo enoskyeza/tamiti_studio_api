@@ -21,7 +21,7 @@ class Project(BaseModel):
     actual_hours = models.PositiveIntegerField(default=0)
     budget = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     completion_percentage = models.PositiveIntegerField(default=0)
-    tags = models.JSONField(default=list, blank=True)
+    tags = models.JSONField(default=list, blank=True, null=True)
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_projects')
 
     def __str__(self):
@@ -71,6 +71,10 @@ class Project(BaseModel):
     def assignedUsers(self):
         """Return list of assigned user IDs to match mockup API"""
         return list(self.members.values_list('user_id', flat=True))
+
+    class Meta:
+        # Deterministic default ordering for stable pagination and list results
+        ordering = ['-updated_at', '-id']
 
 
 class ProjectMember(BaseModel):
