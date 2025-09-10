@@ -8,7 +8,6 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.core.cache import cache
 
-print("🚀 PLANNER VIEWS MODULE LOADED - DEBUG PRINTS ACTIVE")
 
 from rest_framework import permissions, generics, status, viewsets
 from rest_framework.decorators import api_view, permission_classes, action
@@ -378,13 +377,13 @@ class BlockListView(generics.ListAPIView):
             from django.utils.dateparse import parse_datetime, parse_date
             from django.utils import timezone
             from datetime import datetime, time
-            import pytz
+            from zoneinfo import ZoneInfo
             # Try parsing as datetime first, then as date
             s = parse_datetime(start)
             if not s:
                 date_obj = parse_date(start)
                 if date_obj:
-                    s = timezone.make_aware(datetime.combine(date_obj, time.min), pytz.UTC)
+                    s = timezone.make_aware(datetime.combine(date_obj, time.min), ZoneInfo("UTC"))
             print(f"🔍 Parsed start datetime: {s}")
             if s:
                 qs = qs.filter(start__gte=s)
@@ -393,13 +392,13 @@ class BlockListView(generics.ListAPIView):
             from django.utils.dateparse import parse_datetime, parse_date
             from django.utils import timezone
             from datetime import datetime, time
-            import pytz
+            from zoneinfo import ZoneInfo
             # Try parsing as datetime first, then as date
             e = parse_datetime(end)
             if not e:
                 date_obj = parse_date(end)
                 if date_obj:
-                    e = timezone.make_aware(datetime.combine(date_obj, time(23, 59, 59)), pytz.UTC)
+                    e = timezone.make_aware(datetime.combine(date_obj, time(23, 59, 59)), ZoneInfo("UTC"))
             print(f"🔍 Parsed end datetime: {e}")
             if e:
                 qs = qs.filter(start__lte=e)

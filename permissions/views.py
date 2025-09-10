@@ -1,6 +1,7 @@
 from django.shortcuts import get_object_or_404
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.auth.models import Group
+from django.utils import timezone
 from rest_framework import generics, viewsets, status
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
@@ -366,10 +367,10 @@ def permission_stats(request):
             custom_permissions__is_active=True
         ).distinct().count(),
         'permission_checks_today': PermissionLog.objects.filter(
-            created_at__date=request.user.created_at.date()
+            created_at__date=timezone.now().date()
         ).count(),
         'denied_permissions_today': PermissionLog.objects.filter(
-            created_at__date=request.user.created_at.date(),
+            created_at__date=timezone.now().date(),
             permission_granted=False
         ).count()
     }
