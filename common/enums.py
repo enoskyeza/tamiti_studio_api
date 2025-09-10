@@ -32,6 +32,12 @@ class AccountType(BaseEnum):
     WALLET = 'wallet', 'Wallet'
     PAYPAL = 'paypal', 'Paypal'
     CASHBOX = 'cashbox', 'Cashbox'
+    PERSONAL_BANK = 'personal_bank', 'Personal Bank Account'
+    AIRTEL_MONEY = 'airtel_money', 'Airtel Money'
+    MTN_MONEY = 'mtn_money', 'MTN Mobile Money'
+    CASH_WALLET = 'cash_wallet', 'Cash Wallet'
+    SAVINGS_ACCOUNT = 'savings_account', 'Savings Account'
+    CREDIT_CARD = 'credit_card', 'Credit Card'
 
 
 class Currency(BaseEnum):
@@ -199,3 +205,49 @@ class PaymentMethod(BaseEnum):
     CARD = 'card', 'Card'
     CHEQUE = 'cheque', 'Cheque'
     OTHER = 'other', 'Other'
+
+
+class FinanceScope(BaseEnum):
+    COMPANY = 'company', 'Company'
+    PERSONAL = 'personal', 'Personal'
+
+
+class PersonalExpenseCategory(BaseEnum):
+    FOOD = 'food', 'Food & Dining'
+    TRANSPORT = 'transport', 'Transportation'
+    UTILITIES = 'utilities', 'Utilities'
+    ENTERTAINMENT = 'entertainment', 'Entertainment'
+    HEALTHCARE = 'healthcare', 'Healthcare'
+    SHOPPING = 'shopping', 'Shopping'
+    EDUCATION = 'education', 'Education'
+    SAVINGS = 'savings', 'Savings & Investment'
+    DEBT = 'debt', 'Debt Payment'
+    RENT = 'rent', 'Rent & Housing'
+    INSURANCE = 'insurance', 'Insurance'
+    SUBSCRIPTIONS = 'subscriptions', 'Subscriptions'
+    GIFTS = 'gifts', 'Gifts & Donations'
+    TRANSFER = 'transfer', 'Account Transfer'
+    TRANSFER_FEE = 'transfer_fee', 'Transfer Fee'
+    LOAN_GIVEN = 'loan_given', 'Loan Given'
+    OTHER = 'other', 'Other'
+
+
+class PersonalIncomeSource(BaseEnum):
+    SALARY = 'salary', 'Salary'
+    FREELANCE = 'freelance', 'Freelance Work'
+    BUSINESS = 'business', 'Business Income'
+    INVESTMENT = 'investment', 'Investment Returns'
+    RENTAL = 'rental', 'Rental Income'
+    GIFT = 'gift', 'Gift/Allowance'
+    REFUND = 'refund', 'Refund'
+    BONUS = 'bonus', 'Bonus'
+    TRANSFER = 'transfer', 'Account Transfer'
+    LOAN_REPAYMENT = 'loan_repayment', 'Loan Repayment'
+    OTHER = 'other', 'Other'
+
+
+class BudgetPeriod(BaseEnum):
+    WEEKLY = 'weekly', 'Weekly'
+    MONTHLY = 'monthly', 'Monthly'
+    QUARTERLY = 'quarterly', 'Quarterly'
+    YEARLY = 'yearly', 'Yearly'
