@@ -8,6 +8,8 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django.core.cache import cache
 
+print("🚀 PLANNER VIEWS MODULE LOADED - DEBUG PRINTS ACTIVE")
+
 from rest_framework import permissions, generics, status, viewsets
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
@@ -290,6 +292,8 @@ def schedule_preview(request):
 def schedule_commit(request):
     scope = request.data.get('scope', 'day')
     date_str = request.data.get('date')
+    print(f"🔥 COMMIT API DEBUG - User: {request.user.username}, Date: {date_str}")
+    
     if not date_str:
         return Response({'error': 'date is required'}, status=status.HTTP_400_BAD_REQUEST)
     try:
@@ -297,20 +301,30 @@ def schedule_commit(request):
     except ValueError:
         return Response({'error': 'invalid date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
     blocks = data.get('blocks', [])
+    print(f"🔥 Blocks to create: {len(blocks)}")
+    
     created = []
     from django.utils.dateparse import parse_datetime
-    for b in blocks:
+    for i, b in enumerate(blocks):
+        start_dt = parse_datetime(b['start']) if isinstance(b['start'], str) else b['start']
+        end_dt = parse_datetime(b['end']) if isinstance(b['end'], str) else b['end']
+        
+        print(f"🔥 Creating block {i+1}: {b['title']}, start: {start_dt}, end: {end_dt}")
+        
         tb = TimeBlock.objects.create(
             owner_user=request.user,
             task_id=b['task_id'],
             title=b['title'],
-            start=parse_datetime(b['start']) if isinstance(b['start'], str) else b['start'],
-            end=parse_datetime(b['end']) if isinstance(b['end'], str) else b['end'],
+            start=start_dt,
+            end=end_dt,
             status='committed',
             is_break=b['is_break'],
             source='auto'
         )
         created.append(tb)
+        print(f"🔥 Created TimeBlock ID: {tb.id}")
+    
+    print(f"🔥 Total created blocks: {len(created)}")
     return Response(TimeBlockSerializer(created, many=True).data, status=201)
 
 
@@ -347,19 +361,53 @@ class BlockListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        print(f"🔍 BlockListView DEBUG - User: {user.username}")
+        
         qs = TimeBlock.objects.filter(owner_user=user)
+        print(f"🔍 Initial queryset count: {qs.count()}")
+        
+        # Print all blocks for this user
+        all_blocks = list(qs.values('id', 'title', 'start', 'end', 'status'))
+        print(f"🔍 All user blocks: {all_blocks}")
+        
         start = self.request.query_params.get('start')
         end = self.request.query_params.get('end')
+        print(f"🔍 Query params - start: {start}, end: {end}")
+        
         if start:
-            from django.utils.dateparse import parse_datetime
+            from django.utils.dateparse import parse_datetime, parse_date
+            from django.utils import timezone
+            from datetime import datetime, time
+            import pytz
+            # Try parsing as datetime first, then as date
             s = parse_datetime(start)
+            if not s:
+                date_obj = parse_date(start)
+                if date_obj:
+                    s = timezone.make_aware(datetime.combine(date_obj, time.min), pytz.UTC)
+            print(f"🔍 Parsed start datetime: {s}")
             if s:
-                qs = qs.filter(end__gte=s)
+                qs = qs.filter(start__gte=s)
+                print(f"🔍 After start filter count: {qs.count()}")
         if end:
-            from django.utils.dateparse import parse_datetime
+            from django.utils.dateparse import parse_datetime, parse_date
+            from django.utils import timezone
+            from datetime import datetime, time
+            import pytz
+            # Try parsing as datetime first, then as date
             e = parse_datetime(end)
+            if not e:
+                date_obj = parse_date(end)
+                if date_obj:
+                    e = timezone.make_aware(datetime.combine(date_obj, time(23, 59, 59)), pytz.UTC)
+            print(f"🔍 Parsed end datetime: {e}")
             if e:
                 qs = qs.filter(start__lte=e)
+                print(f"🔍 After end filter count: {qs.count()}")
+        
+        final_blocks = list(qs.values('id', 'title', 'start', 'end', 'status'))
+        print(f"🔍 Final filtered blocks: {final_blocks}")
+        
         return qs.order_by('start')
 
 

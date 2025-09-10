@@ -28,7 +28,7 @@ class CalendarEventSerializer(serializers.ModelSerializer):
 
 
 class TimeBlockSerializer(serializers.ModelSerializer):
-    duration_minutes = serializers.IntegerField(read_only=True, source='duration_minutes')
+    duration_minutes = serializers.IntegerField(read_only=True)
     task_title = serializers.CharField(read_only=True, source='task.title')
     task_priority = serializers.CharField(read_only=True, source='task.priority')
 
