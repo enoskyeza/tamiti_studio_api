@@ -25,7 +25,7 @@ def test_zone_creation():
 
 @pytest.mark.django_db
 def test_lead_methods():
-    lead = LeadFactory(priority=PriorityLevel.CRITICAL, lead_score=90)
+    lead = LeadFactory(priority=PriorityLevel.HIGH, lead_score=90)
     assert lead.is_hot_lead() is True
     lead.follow_up_date = timezone.now().date()
     assert lead.has_pending_follow_up() is True

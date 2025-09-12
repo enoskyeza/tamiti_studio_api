@@ -81,15 +81,17 @@ class ProjectCommentFactory(DjangoModelFactory):
     author = factory.SubFactory(UserFactory)
     content = "This is a comment"
     is_internal = True
-
-    @factory.post_generation
-    def project(self, create, extracted, **kwargs):
-        # Allow passing a project=... when building/creating; otherwise create one
-        project = extracted or ProjectFactory()
-        self.content_type = ContentType.objects.get_for_model(Project)
-        self.object_id = project.id
-        if create:
-            self.save()
+    content_type = factory.LazyAttribute(lambda obj: ContentType.objects.get_for_model(Project))
+    
+    @classmethod
+    def _create(cls, model_class, *args, **kwargs):
+        # Handle project parameter
+        project = kwargs.pop('project', None)
+        if not project:
+            project = ProjectFactory()
+        
+        kwargs['object_id'] = project.id
+        return super()._create(model_class, *args, **kwargs)
 
 
 class PartyFactory(DjangoModelFactory):
@@ -119,9 +121,8 @@ class InvoiceFactory(DjangoModelFactory):
 
     party = factory.SubFactory(PartyFactory)
     direction = InvoiceDirection.OUTGOING
-    total_amount = 500000
-    description = factory.Faker('sentence')
-    issued_date = factory.LazyFunction(timezone.now)
+    total = 500000
+    issue_date = factory.LazyFunction(lambda: timezone.now().date())
     due_date = factory.LazyFunction(lambda: timezone.now().date())
 
 
