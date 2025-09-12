@@ -46,6 +46,7 @@ INSTALLED_APPS = [
     'planner',
     'comments',
     'permissions',
+    'dashboard',
 ]
 
 MIDDLEWARE = [
