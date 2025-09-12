@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from tasks.models import Task, TaskGroup, KanbanBoard, KanbanColumn
+from tasks.models import Task, TaskGroup, KanbanBoard, KanbanColumn, BacklogItem, TaskChecklist
 from accounts.models import Department
 from taggit.serializers import TaggitSerializer, TagListSerializerField
 from users.models import User
@@ -17,7 +17,6 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_to_email = serializers.EmailField(source='assigned_to.email', read_only=True)
     assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True)
 
-    # Mockup API compatibility fields
     projectId = serializers.ReadOnlyField()
     assignedUsers = serializers.ReadOnlyField()
     assignedTeams = serializers.ReadOnlyField()
@@ -101,27 +100,94 @@ class TaskToggleSerializer(serializers.Serializer):
 
 
 class KanbanColumnSerializer(serializers.ModelSerializer):
-    task_count = serializers.ReadOnlyField()
-    is_wip_exceeded = serializers.ReadOnlyField()
-    tasks = serializers.SerializerMethodField()
-
+    tasks_count = serializers.SerializerMethodField()
+    
     class Meta:
         model = KanbanColumn
-        fields = [
-            'id', 'name', 'status_mapping', 'order', 'color', 'wip_limit',
-            'task_count', 'is_wip_exceeded', 'tasks', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ('created_at', 'updated_at')
+        fields = '__all__'
+    
+    def get_tasks_count(self, obj):
+        return obj.tasks.count()
 
-    def get_tasks(self, obj):
-        """Get tasks in this column ordered by kanban_position"""
-        if obj.status_mapping:
-            # Use status mapping to get tasks
-            tasks = obj.board.project.tasks.filter(status=obj.status_mapping).order_by('kanban_position')
-        else:
-            # Use direct relationship
-            tasks = obj.tasks.all().order_by('kanban_position')
-        return TaskSerializer(tasks, many=True).data
+
+class TaskChecklistSerializer(serializers.ModelSerializer):
+    """Serializer for task checklist items"""
+    
+    class Meta:
+        model = TaskChecklist
+        fields = ['id', 'title', 'is_completed', 'completed_at', 'position', 'created_at', 'updated_at']
+        read_only_fields = ['completed_at', 'created_at', 'updated_at']
+
+
+class BacklogItemSerializer(serializers.ModelSerializer):
+    """Serializer for backlog items"""
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    converted_task_title = serializers.CharField(source='converted_to_task.title', read_only=True)
+    
+    class Meta:
+        model = BacklogItem
+        fields = [
+            'id', 'title', 'source', 'created_by', 'created_by_name',
+            'converted_to_task', 'converted_task_title', 'is_converted',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'converted_to_task', 'is_converted', 'created_at', 'updated_at']
+
+
+class BacklogToTaskSerializer(serializers.Serializer):
+    """Serializer for converting backlog items to tasks"""
+    description = serializers.CharField(required=False, allow_blank=True)
+    priority = serializers.ChoiceField(choices=Task._meta.get_field('priority').choices, required=False)
+    due_date = serializers.DateTimeField(required=False, allow_null=True)
+    estimated_hours = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    estimated_minutes = serializers.IntegerField(required=False, allow_null=True, min_value=1)
+    project = serializers.IntegerField(required=False, allow_null=True)
+    assigned_to = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, allow_null=True)
+    tags = serializers.ListField(child=serializers.CharField(), required=False)
+    
+    def validate_project(self, value):
+        """Validate that the user has access to the project"""
+        if value is None:
+            return value
+        
+        request = self.context.get('request')
+        if request and hasattr(request, 'user'):
+            from projects.models import Project
+            try:
+                project = Project.objects.filter(
+                    created_by=request.user
+                ).get(id=value)
+                return project
+            except Project.DoesNotExist:
+                raise serializers.ValidationError("Project not found or access denied")
+        return value
+
+
+class TaskDetailSerializer(TaskSerializer):
+    """Extended task serializer with checklist items"""
+    checklist_items = TaskChecklistSerializer(many=True, read_only=True)
+    checklist_completed_count = serializers.SerializerMethodField()
+    checklist_total_count = serializers.SerializerMethodField()
+    checklist_progress_percentage = serializers.SerializerMethodField()
+    
+    class Meta(TaskSerializer.Meta):
+        fields = list(TaskSerializer.Meta.fields) + [
+            'checklist_items', 'checklist_completed_count', 
+            'checklist_total_count', 'checklist_progress_percentage'
+        ]
+    
+    def get_checklist_completed_count(self, obj):
+        return obj.checklist_items.filter(is_completed=True).count()
+    
+    def get_checklist_total_count(self, obj):
+        return obj.checklist_items.count()
+    
+    def get_checklist_progress_percentage(self, obj):
+        total = obj.checklist_items.count()
+        if total == 0:
+            return 0
+        completed = obj.checklist_items.filter(is_completed=True).count()
+        return round((completed / total) * 100, 1)
 
 
 class KanbanBoardSerializer(serializers.ModelSerializer):

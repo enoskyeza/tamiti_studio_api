@@ -40,7 +40,7 @@ class Lead(BaseModel):
         return self.follow_up_date and self.follow_up_date >= timezone.now().date()
 
     def is_hot_lead(self):
-        return self.priority in [PriorityLevel.HIGH, PriorityLevel.CRITICAL] or self.lead_score >= 80
+        return self.priority in [PriorityLevel.HIGH, PriorityLevel.URGENT] or self.lead_score >= 80
 
     class Meta:
         ordering = ['-created_at', '-id']
