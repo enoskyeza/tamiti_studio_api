@@ -685,6 +685,16 @@ class PersonalDebt(BaseModel):
 
     class Meta:
         ordering = ['due_date', '-created_at']
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(creditor_name__isnull=False) & ~models.Q(creditor_name=''),
+                name='debt_creditor_name_not_empty'
+            ),
+            models.CheckConstraint(
+                check=models.Q(due_date__gte=models.F('borrowed_date')),
+                name='debt_due_date_after_borrowed_date'
+            ),
+        ]
 
     @property
     def total_paid(self):
