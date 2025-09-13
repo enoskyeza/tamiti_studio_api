@@ -15,7 +15,11 @@ class TaskSerializer(serializers.ModelSerializer):
     is_overdue = serializers.ReadOnlyField()
     project_name = serializers.CharField(source='project.name', read_only=True)
     assigned_to_email = serializers.EmailField(source='assigned_to.email', read_only=True)
+    assigned_to_name = serializers.CharField(source='assigned_to.get_full_name', read_only=True)
     assigned_team_name = serializers.CharField(source='assigned_team.name', read_only=True)
+    milestone_name = serializers.CharField(source='milestone.title', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    parent_title = serializers.CharField(source='parent.title', read_only=True)
 
     projectId = serializers.ReadOnlyField()
     assignedUsers = serializers.ReadOnlyField()
@@ -26,6 +30,9 @@ class TaskSerializer(serializers.ModelSerializer):
     createdAt = serializers.ReadOnlyField()
     updatedAt = serializers.ReadOnlyField()
     tags = serializers.SerializerMethodField()
+    assigned_users_names = serializers.SerializerMethodField()
+    assigned_teams_names = serializers.SerializerMethodField()
+    dependencies_titles = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -33,18 +40,31 @@ class TaskSerializer(serializers.ModelSerializer):
             'id', 'project', 'project_name', 'projectId', 'title', 'description', 'status',
             'priority', 'due_date', 'dueDate', 'start_at', 'earliest_start_at', 'latest_finish_at',
             'snoozed_until', 'backlog_date', 'estimated_minutes', 'estimated_hours', 'estimatedHours',
-            'actual_hours', 'actualHours', 'assigned_to', 'assigned_to_email', 'assigned_users',
+            'actual_hours', 'actualHours', 'assigned_to', 'assigned_to_email', 'assigned_to_name', 'assigned_users',
             'assigned_team', 'assigned_team_name', 'assigned_teams', 'assignedUsers', 'assignedTeams',
-            'dependencies', 'milestone', 'origin_app', 'created_by', 'notes', 'tags',
-            'position', 'is_completed', 'completed_at', 'is_hard_due', 'parent',
+            'dependencies', 'milestone', 'milestone_name', 'origin_app', 'created_by', 'created_by_name', 'notes', 'tags',
+            'position', 'is_completed', 'completed_at', 'is_hard_due', 'parent', 'parent_title',
             'context_energy', 'context_location', 'recurrence_rule',
-            'created_at', 'updated_at', 'createdAt', 'updatedAt', 'is_overdue'
+            'created_at', 'updated_at', 'createdAt', 'updatedAt', 'is_overdue',
+            'assigned_users_names', 'assigned_teams_names', 'dependencies_titles'
         )
         read_only_fields = ('created_at', 'updated_at', 'completed_at')
 
     def get_tags(self, obj):
         """Return tags as string array to match mockup API"""
         return [tag.name for tag in obj.tags.all()]
+    
+    def get_assigned_users_names(self, obj):
+        """Return assigned users as list of full names"""
+        return [user.get_full_name() for user in obj.assigned_users.all()]
+    
+    def get_assigned_teams_names(self, obj):
+        """Return assigned teams as list of names"""
+        return [team.name for team in obj.assigned_teams.all()]
+    
+    def get_dependencies_titles(self, obj):
+        """Return dependencies as list of task titles"""
+        return [dep.title for dep in obj.dependencies.all()]
 
 
 class TaskCreateSerializer(TaggitSerializer, serializers.ModelSerializer):
