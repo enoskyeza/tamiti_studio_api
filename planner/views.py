@@ -525,10 +525,18 @@ class WorkGoalViewSet(viewsets.ModelViewSet):
     serializer_class = WorkGoalSerializer
 
     def get_queryset(self):
-        qs = WorkGoal.objects.filter(
-            Q(owner_user=self.request.user) | 
-            Q(owner_team__in=self.request.user.staff_profile.department if hasattr(self.request.user, 'staff_profile') else [])
-        )
+        # Get user's department safely
+        user_department = None
+        if hasattr(self.request.user, 'staff_profile') and self.request.user.staff_profile and self.request.user.staff_profile.department:
+            user_department = self.request.user.staff_profile.department
+        
+        # Build query with proper department filtering
+        if user_department:
+            qs = WorkGoal.objects.filter(
+                Q(owner_user=self.request.user) | Q(owner_team=user_department)
+            )
+        else:
+            qs = WorkGoal.objects.filter(owner_user=self.request.user)
         
         # Filter by active status
         if self.request.query_params.get('active_only', 'true').lower() == 'true':
@@ -630,12 +638,20 @@ def productivity_dashboard(request):
     latest_review = DailyReview.objects.filter(owner_user=request.user).order_by('-date').first()
     
     # Get active work goals
-    active_goals = WorkGoal.objects.filter(
-        Q(owner_user=request.user) | Q(owner_team__in=[
-            request.user.staff_profile.department if hasattr(request.user, 'staff_profile') else None
-        ]),
-        is_active=True
-    )[:5]
+    user_department = None
+    if hasattr(request.user, 'staff_profile') and request.user.staff_profile and request.user.staff_profile.department:
+        user_department = request.user.staff_profile.department
+    
+    if user_department:
+        active_goals = WorkGoal.objects.filter(
+            Q(owner_user=request.user) | Q(owner_team=user_department),
+            is_active=True
+        )[:5]
+    else:
+        active_goals = WorkGoal.objects.filter(
+            owner_user=request.user,
+            is_active=True
+        )[:5]
     
     # Get productivity insights
     insights = ProductivityInsight.objects.filter(

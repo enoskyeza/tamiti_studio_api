@@ -30,7 +30,8 @@ class TestAuthEndpoints:
             "password": "testpass123"
         })
         assert response.status_code == 200
-        assert "access" in response.data["tokens"]
+        # The response contains access token with key 'access'
+        assert "access" in response.data
 
     def test_verify_email(self):
         user = UserFactory(is_verified=False)

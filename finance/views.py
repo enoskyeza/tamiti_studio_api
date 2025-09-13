@@ -47,8 +47,68 @@ class PartyViewSet(BaseModelViewSet):
 
 
 class AccountViewSet(BaseModelViewSet):
-    queryset = Account.objects.all()
     serializer_class = AccountSerializer
+    
+    def get_queryset(self):
+        """
+        Filter accounts based on scope and user permissions:
+        - Personal accounts: only visible to owner
+        - Company accounts: visible based on permissions
+        """
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        
+        user = self.request.user
+        permission_service = PermissionService()
+        account_content_type = ContentType.objects.get_for_model(Account)
+        
+        # Personal accounts - only show to owner
+        personal_accounts = Account.objects.filter(
+            scope=FinanceScope.PERSONAL,
+            owner=user
+        )
+        
+        # Company accounts - filter based on permissions
+        company_accounts = Account.objects.filter(scope=FinanceScope.COMPANY)
+        
+        # Filter company accounts based on read permissions
+        accessible_company_accounts = []
+        for account in company_accounts:
+            if permission_service.has_permission(
+                user=user,
+                action='read',
+                content_type=account_content_type,
+                obj=account,
+                use_cache=True,
+                log_check=False
+            ):
+                accessible_company_accounts.append(account.id)
+        
+        # If no specific permissions are set, allow access to all company accounts
+        # This maintains backward compatibility
+        if not accessible_company_accounts and company_accounts.exists():
+            # Check if there are any company account permissions defined
+            from permissions.models import Permission
+            has_account_permissions = Permission.objects.filter(
+                content_type=account_content_type,
+                is_active=True
+            ).exists()
+            
+            if not has_account_permissions:
+                # No permissions defined, allow all company accounts
+                accessible_company_accounts = list(company_accounts.values_list('id', flat=True))
+        
+        filtered_company_accounts = Account.objects.filter(
+            scope=FinanceScope.COMPANY,
+            id__in=accessible_company_accounts
+        )
+        
+        # Combine both querysets using Q objects instead of union
+        from django.db.models import Q
+        
+        accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + list(filtered_company_accounts.values_list('id', flat=True))
+        
+        return Account.objects.filter(id__in=accessible_account_ids).order_by('scope', 'name')
 
 
 class InvoiceViewSet(BaseModelViewSet):
@@ -112,12 +172,58 @@ class GoalMilestoneViewSet(BaseModelViewSet):
 
 
 class TransactionViewSet(BaseModelViewSet):
-    queryset = Transaction.objects.select_related('account')
     serializer_class = TransactionSerializer
 
     def get_queryset(self):
-        qs = super().get_queryset()
-        return qs.order_by('-date')
+        """
+        Filter transactions based on account visibility:
+        - Only show transactions for accounts the user has access to
+        """
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        
+        user = self.request.user
+        permission_service = PermissionService()
+        account_content_type = ContentType.objects.get_for_model(Account)
+        
+        # Get accessible accounts (personal + permitted company accounts)
+        personal_accounts = Account.objects.filter(
+            scope=FinanceScope.PERSONAL,
+            owner=user
+        )
+        
+        company_accounts = Account.objects.filter(scope=FinanceScope.COMPANY)
+        accessible_company_accounts = []
+        
+        for account in company_accounts:
+            if permission_service.has_permission(
+                user=user,
+                action='read',
+                content_type=account_content_type,
+                obj=account,
+                use_cache=True,
+                log_check=False
+            ):
+                accessible_company_accounts.append(account.id)
+        
+        # Backward compatibility: if no permissions defined, allow all company accounts
+        if not accessible_company_accounts and company_accounts.exists():
+            from permissions.models import Permission
+            has_account_permissions = Permission.objects.filter(
+                content_type=account_content_type,
+                is_active=True
+            ).exists()
+            
+            if not has_account_permissions:
+                accessible_company_accounts = list(company_accounts.values_list('id', flat=True))
+        
+        # Get all accessible account IDs
+        accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + accessible_company_accounts
+        
+        # Filter transactions by accessible accounts
+        return Transaction.objects.select_related('account').filter(
+            account_id__in=accessible_account_ids
+        ).order_by('-date')
 
 
 class PaymentViewSet(viewsets.ReadOnlyModelViewSet):

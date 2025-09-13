@@ -5,6 +5,10 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 from datetime import timedelta
 from django.core.cache import cache
+from django.db import transaction
+from django.db.utils import OperationalError
+import time
+import logging
 from users.models import User
 from .models import (
     Permission, PermissionGroup, UserPermissionCache, PermissionLog,
@@ -223,28 +227,46 @@ class PermissionService:
         self,
         user: User,
         content_type: ContentType,
-        object_id: Optional[int],
+        object_id: Optional[str],
         action: str,
         field_name: Optional[str],
         result: bool
     ):
         """
-        Cache permission result
+        Cache permission result with retry logic for database locks
         """
         
         expires_at = timezone.now() + timedelta(seconds=self.cache_timeout)
         
-        UserPermissionCache.objects.update_or_create(
-            user=user,
-            content_type=content_type,
-            object_id=object_id,
-            action=action,
-            field_name=field_name or '',
-            defaults={
-                'has_permission': result,
-                'cache_expires_at': expires_at
-            }
-        )
+        # Retry logic for SQLite database locks
+        max_retries = 3
+        retry_delay = 0.1  # Start with 100ms delay
+        
+        for attempt in range(max_retries):
+            try:
+                with transaction.atomic():
+                    UserPermissionCache.objects.update_or_create(
+                        user=user,
+                        content_type=content_type,
+                        object_id=object_id,
+                        action=action,
+                        field_name=field_name or '',
+                        defaults={
+                            'has_permission': result,
+                            'cache_expires_at': expires_at
+                        }
+                    )
+                return  # Success, exit the retry loop
+                
+            except OperationalError as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    # Wait with exponential backoff before retrying
+                    time.sleep(retry_delay * (2 ** attempt))
+                    continue
+                else:
+                    # Log the error but don't fail the permission check
+                    logging.warning(f"Failed to cache permission result after {max_retries} attempts: {e}")
+                    return
     
     def _log_permission_check(
         self,
@@ -257,18 +279,35 @@ class PermissionService:
         applied_permissions: List[int]
     ):
         """
-        Log permission check for audit purposes
+        Log permission check for audit purposes with retry logic for database locks
         """
         
-        PermissionLog.objects.create(
-            user=user,
-            action=action,
-            content_type=content_type,
-            object_id=object_id,
-            field_name=field_name or '',
-            permission_granted=result,
-            permissions_applied=applied_permissions
-        )
+        # Retry logic for SQLite database locks
+        max_retries = 3
+        retry_delay = 0.1
+        
+        for attempt in range(max_retries):
+            try:
+                with transaction.atomic():
+                    PermissionLog.objects.create(
+                        user=user,
+                        action=action,
+                        content_type=content_type,
+                        object_id=object_id,
+                        field_name=field_name or '',
+                        permission_granted=result,
+                        permissions_applied=applied_permissions
+                    )
+                return  # Success, exit the retry loop
+                
+            except OperationalError as e:
+                if "database is locked" in str(e).lower() and attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2 ** attempt))
+                    continue
+                else:
+                    # Log the error but don't fail the permission check
+                    logging.warning(f"Failed to log permission check after {max_retries} attempts: {e}")
+                    return
     
     def clear_user_cache(self, user: User):
         """

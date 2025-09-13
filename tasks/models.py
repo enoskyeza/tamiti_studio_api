@@ -191,7 +191,99 @@ class KanbanBoard(BaseModel):
     name = models.CharField(max_length=200, default="Project Board")
     
     def __str__(self):
-        return f"{self.project.name} - {self.name}"
+        return self.title
+
+
+class BacklogItem(BaseModel):
+    """
+    Simple backlog for capturing ideas and tasks without detailed planning.
+    Can be converted to full tasks later.
+    """
+    class Source(models.TextChoices):
+        PERSONAL = 'personal', 'Personal'
+        WORK = 'work', 'Work'
+        CLIENT = 'client', 'Client'
+    
+    title = models.CharField(max_length=255)
+    source = models.CharField(max_length=20, choices=Source.choices, default=Source.PERSONAL)
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='backlog_items')
+    converted_to_task = models.ForeignKey(Task, null=True, blank=True, on_delete=models.SET_NULL, related_name='source_backlog_item')
+    is_converted = models.BooleanField(default=False)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['created_by', 'source']),
+            models.Index(fields=['created_by', 'is_converted']),
+        ]
+    
+    def __str__(self):
+        return f"{self.title} ({self.get_source_display()})"
+    
+    def convert_to_task(self, **task_data):
+        """
+        Convert this backlog item to a full task.
+        Returns the created task.
+        """
+        if self.is_converted:
+            return self.converted_to_task
+        
+        # Set default values from backlog item
+        task_defaults = {
+            'title': self.title,
+            'created_by': self.created_by,
+            'assigned_to': self.created_by,
+            'origin_app': OriginApp.TASKS,
+        }
+        
+        # Override with provided task_data
+        task_defaults.update(task_data)
+        
+        # Create the task
+        task = Task.objects.create(**task_defaults)
+        
+        # Mark this backlog item as converted
+        self.converted_to_task = task
+        self.is_converted = True
+        self.save(update_fields=['converted_to_task', 'is_converted', 'updated_at'])
+        
+        return task
+
+
+class TaskChecklist(BaseModel):
+    """
+    Checklist items for tasks to break down work into smaller actionable items.
+    """
+    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name='checklist_items')
+    title = models.CharField(max_length=255)
+    is_completed = models.BooleanField(default=False)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    position = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        ordering = ['position', 'created_at']
+        indexes = [
+            models.Index(fields=['task', 'position']),
+            models.Index(fields=['task', 'is_completed']),
+        ]
+    
+    def __str__(self):
+        status = "✓" if self.is_completed else "○"
+        return f"{status} {self.title}"
+    
+    def mark_completed(self):
+        """Mark this checklist item as completed."""
+        if not self.is_completed:
+            self.is_completed = True
+            self.completed_at = timezone.now()
+            self.save(update_fields=['is_completed', 'completed_at', 'updated_at'])
+    
+    def mark_incomplete(self):
+        """Mark this checklist item as incomplete."""
+        if self.is_completed:
+            self.is_completed = False
+            self.completed_at = None
+            self.save(update_fields=['is_completed', 'completed_at', 'updated_at'])
 
 
 class KanbanColumn(BaseModel):

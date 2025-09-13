@@ -1,7 +1,7 @@
 from django.contrib import admin
 from django.urls import reverse
 from django.utils.html import format_html
-from .models import Task, TaskGroup, KanbanBoard, KanbanColumn
+from .models import Task, TaskGroup, KanbanBoard, KanbanColumn, BacklogItem, TaskChecklist
 try:
     from planner.models import TimeBlock
 except Exception:  # planner may not be migrated yet in some envs
@@ -105,6 +105,12 @@ class TaskAdmin(admin.ModelAdmin):
         from datetime import timedelta
         queryset.update(snoozed_until=timezone.now() + timedelta(days=1))
 
+    class TaskChecklistInline(admin.TabularInline):
+        model = TaskChecklist
+        extra = 1
+        fields = ('title', 'is_completed', 'position')
+        ordering = ('position', 'created_at')
+
     if TimeBlock is not None:
         class TimeBlockInline(admin.TabularInline):
             model = TimeBlock
@@ -113,7 +119,9 @@ class TaskAdmin(admin.ModelAdmin):
             readonly_fields = ()
             fk_name = 'task'
 
-        inlines = [TimeBlockInline]
+        inlines = [TaskChecklistInline, TimeBlockInline]
+    else:
+        inlines = [TaskChecklistInline]
 
 
 @admin.register(TaskGroup)
@@ -155,3 +163,66 @@ class KanbanColumnAdmin(admin.ModelAdmin):
     readonly_fields = ['created_at', 'updated_at', 'task_count', 'is_wip_exceeded']
     ordering = ['board', 'order']
     list_select_related = ('board', 'board__project')
+
+
+@admin.register(BacklogItem)
+class BacklogItemAdmin(admin.ModelAdmin):
+    save_on_top = True
+    list_display = ['title', 'source', 'created_by', 'is_converted', 'converted_task_link', 'created_at']
+    list_filter = ['source', 'is_converted', 'created_at']
+    search_fields = ['title', 'created_by__username', 'created_by__email']
+    readonly_fields = ['converted_to_task', 'is_converted', 'created_at', 'updated_at']
+    autocomplete_fields = ['created_by']
+    ordering = ['-created_at']
+    list_select_related = ('created_by', 'converted_to_task')
+    
+    def converted_task_link(self, obj):
+        if obj.converted_to_task:
+            url = reverse("admin:tasks_task_change", args=[obj.converted_to_task.pk])
+            return format_html('<a href="{}">{}</a>', url, obj.converted_to_task.title)
+        return '—'
+    converted_task_link.short_description = 'Converted Task'
+    converted_task_link.admin_order_field = 'converted_to_task'
+    
+    actions = ['convert_to_tasks']
+    
+    @admin.action(description="Convert selected backlog items to tasks")
+    def convert_to_tasks(self, request, queryset):
+        converted_count = 0
+        for item in queryset.filter(is_converted=False):
+            item.convert_to_task()
+            converted_count += 1
+        
+        self.message_user(request, f"Successfully converted {converted_count} backlog items to tasks.")
+
+
+@admin.register(TaskChecklist)
+class TaskChecklistAdmin(admin.ModelAdmin):
+    save_on_top = True
+    list_display = ['title', 'task_link', 'is_completed', 'completed_at', 'position', 'created_at']
+    list_filter = ['is_completed', 'created_at', 'task__project']
+    search_fields = ['title', 'task__title', 'task__project__name']
+    readonly_fields = ['completed_at', 'created_at', 'updated_at']
+    autocomplete_fields = ['task']
+    ordering = ['task', 'position', 'created_at']
+    list_select_related = ('task', 'task__project')
+    
+    def task_link(self, obj):
+        url = reverse("admin:tasks_task_change", args=[obj.task.pk])
+        return format_html('<a href="{}">{}</a>', url, obj.task.title)
+    task_link.short_description = 'Task'
+    task_link.admin_order_field = 'task'
+    
+    actions = ['mark_completed', 'mark_incomplete']
+    
+    @admin.action(description="Mark selected checklist items as completed")
+    def mark_completed(self, request, queryset):
+        for item in queryset.filter(is_completed=False):
+            item.mark_completed()
+        self.message_user(request, f"Marked {queryset.count()} items as completed.")
+    
+    @admin.action(description="Mark selected checklist items as incomplete")
+    def mark_incomplete(self, request, queryset):
+        for item in queryset.filter(is_completed=True):
+            item.mark_incomplete()
+        self.message_user(request, f"Marked {queryset.count()} items as incomplete.")

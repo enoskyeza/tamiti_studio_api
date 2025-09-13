@@ -127,10 +127,15 @@ class WorkGoal(BaseModel):
     def update_progress(self):
         """Update progress based on linked tasks"""
         from tasks.models import Task
-        tasks = Task.objects.filter(work_goal=self)
-        self.total_tasks = tasks.count()
-        self.completed_tasks = tasks.filter(is_completed=True).count()
-        self.progress_percentage = (self.completed_tasks / self.total_tasks * 100) if self.total_tasks > 0 else 0
+        if self.project:
+            tasks = Task.objects.filter(project=self.project)
+            self.total_tasks = tasks.count()
+            self.completed_tasks = tasks.filter(is_completed=True).count()
+            self.progress_percentage = (self.completed_tasks / self.total_tasks * 100) if self.total_tasks > 0 else 0
+        else:
+            self.total_tasks = 0
+            self.completed_tasks = 0
+            self.progress_percentage = 0
         self.save(update_fields=['progress_percentage', 'total_tasks', 'completed_tasks'])
 
 
@@ -185,7 +190,7 @@ class DailyReview(BaseModel):
         
         # Tasks that were scheduled for this day
         scheduled_tasks = Task.objects.filter(
-            owner_user=self.owner_user,
+            assigned_to=self.owner_user,
             time_blocks__start__gte=day_start,
             time_blocks__start__lt=day_end
         ).distinct()
