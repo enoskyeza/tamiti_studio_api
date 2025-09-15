@@ -8,6 +8,38 @@ from .models import (
     TicketType, Batch, Ticket, ScanLog, BatchExport,
 )
 
+# ===== Forms and Inlines (top-level to avoid NameError) =====
+
+class EventManagerInlineForm(forms.ModelForm):
+    permissions = forms.MultipleChoiceField(
+        choices=EventManager.PERMISSION_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Select permissions for this manager",
+    )
+
+    class Meta:
+        model = EventManager
+        fields = ['user', 'role', 'permissions', 'is_active']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and isinstance(self.instance.permissions, list):
+            self.initial['permissions'] = self.instance.permissions
+
+    def clean_permissions(self):
+        data = self.cleaned_data.get('permissions') or []
+        return list(data)
+
+
+class EventManagerInline(admin.StackedInline):
+    model = EventManager
+    extra = 0
+    form = EventManagerInlineForm
+    autocomplete_fields = ['user']
+    fields = ('user', 'role', 'permissions', 'is_active')
+    show_change_link = True
+
 
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
@@ -26,37 +58,6 @@ class EventAdmin(admin.ModelAdmin):
         }),
     )
     
-    class EventManagerInlineForm(forms.ModelForm):
-        permissions = forms.MultipleChoiceField(
-            choices=EventManager.PERMISSION_CHOICES,
-            required=False,
-            widget=forms.CheckboxSelectMultiple,
-            help_text="Select permissions for this manager",
-        )
-
-        class Meta:
-            model = EventManager
-            fields = ['user', 'role', 'permissions', 'is_active']
-
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            # Ensure JSON list -> form list
-            if self.instance and self.instance.pk and isinstance(self.instance.permissions, list):
-                self.initial['permissions'] = self.instance.permissions
-
-        def clean_permissions(self):
-            data = self.cleaned_data.get('permissions') or []
-            # store codes as list
-            return list(data)
-
-    class EventManagerInline(admin.StackedInline):
-        model = EventManager
-        extra = 0
-        form = EventAdmin.EventManagerInlineForm
-        autocomplete_fields = ['user']
-        fields = ('user', 'role', 'permissions', 'is_active')
-        show_change_link = True
-
     inlines = [EventManagerInline]
     
     def save_model(self, request, obj, form, change):
