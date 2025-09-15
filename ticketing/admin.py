@@ -1,8 +1,44 @@
 from django.contrib import admin
+from django import forms
 from django.utils.html import format_html
 from django.urls import reverse
 from django.db.models import Count
-from .models import Event, TicketType, Batch, Ticket, ScanLog, BatchExport
+from .models import (
+    Event, EventManager, BatchManager,
+    TicketType, Batch, Ticket, ScanLog, BatchExport,
+)
+
+# ===== Forms and Inlines (top-level to avoid NameError) =====
+
+class EventManagerInlineForm(forms.ModelForm):
+    permissions = forms.MultipleChoiceField(
+        choices=EventManager.PERMISSION_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Select permissions for this manager",
+    )
+
+    class Meta:
+        model = EventManager
+        fields = ['user', 'role', 'permissions', 'is_active']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and isinstance(self.instance.permissions, list):
+            self.initial['permissions'] = self.instance.permissions
+
+    def clean_permissions(self):
+        data = self.cleaned_data.get('permissions') or []
+        return list(data)
+
+
+class EventManagerInline(admin.StackedInline):
+    model = EventManager
+    extra = 0
+    form = EventManagerInlineForm
+    autocomplete_fields = ['user']
+    fields = ('user', 'role', 'permissions', 'is_active')
+    show_change_link = True
 
 
 @admin.register(Event)
@@ -22,10 +58,20 @@ class EventAdmin(admin.ModelAdmin):
         }),
     )
     
+    inlines = [EventManagerInline]
+    
     def save_model(self, request, obj, form, change):
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for inst in instances:
+            if isinstance(inst, EventManager) and not inst.assigned_by_id:
+                inst.assigned_by = request.user
+            inst.save()
+        formset.save_m2m()
 
 
 class TicketTypeInline(admin.TabularInline):
@@ -63,7 +109,14 @@ class BatchAdmin(admin.ModelAdmin):
         'batch_number', 'created_at', 'activated_count_display',
         'scanned_count_display', 'unused_count_display', 'voided_count_display'
     ]
-    inlines = [TicketInline]
+    class BatchManagerInline(admin.TabularInline):
+        model = BatchManager
+        extra = 0
+        autocomplete_fields = ['manager']
+        fields = ['manager', 'can_activate', 'can_verify']
+        show_change_link = True
+
+    inlines = [BatchManagerInline, TicketInline]
     
     fieldsets = (
         (None, {
@@ -93,6 +146,14 @@ class BatchAdmin(admin.ModelAdmin):
         if not change:
             obj.created_by = request.user
         super().save_model(request, obj, form, change)
+
+    def save_formset(self, request, form, formset, change):
+        instances = formset.save(commit=False)
+        for inst in instances:
+            if isinstance(inst, BatchManager) and not inst.assigned_by_id:
+                inst.assigned_by = request.user
+            inst.save()
+        formset.save_m2m()
     
     def activated_count_display(self, obj):
         return obj.activated_count
@@ -225,3 +286,124 @@ class BatchExportAdmin(admin.ModelAdmin):
     
     def has_change_permission(self, request, obj=None):
         return False  # Exports should not be modified
+
+
+# ============ EventManager admin ============
+
+class EventManagerAdminForm(forms.ModelForm):
+    permissions = forms.MultipleChoiceField(
+        choices=EventManager.PERMISSION_CHOICES,
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Select permissions for this manager",
+    )
+
+    class Meta:
+        model = EventManager
+        fields = ['event', 'user', 'role', 'permissions', 'is_active']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and isinstance(self.instance.permissions, list):
+            self.initial['permissions'] = self.instance.permissions
+
+    def clean_permissions(self):
+        return list(self.cleaned_data.get('permissions') or [])
+
+
+@admin.register(EventManager)
+class EventManagerAdmin(admin.ModelAdmin):
+    form = EventManagerAdminForm
+    list_display = [
+        'event', 'user', 'role', 'permissions_short', 'is_active', 'assigned_by', 'created_at'
+    ]
+    list_filter = ['role', 'is_active', 'event', 'created_at']
+    search_fields = ['event__name', 'user__username', 'user__email']
+    autocomplete_fields = ['event', 'user', 'assigned_by']
+    readonly_fields = ['created_at', 'updated_at']
+    list_select_related = ['event', 'user', 'assigned_by']
+
+    actions = ['activate_managers', 'deactivate_managers', 'grant_all_permissions', 'revoke_all_permissions']
+
+    def permissions_short(self, obj):
+        if not obj.permissions:
+            return '-'
+        return ', '.join(obj.permissions)[:80] + ('…' if len(', '.join(obj.permissions)) > 80 else '')
+    permissions_short.short_description = 'Permissions'
+
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.assigned_by_id:
+            obj.assigned_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def activate_managers(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Activated {updated} manager(s)")
+    activate_managers.short_description = "Activate selected managers"
+
+    def deactivate_managers(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} manager(s)")
+    deactivate_managers.short_description = "Deactivate selected managers"
+
+    def grant_all_permissions(self, request, queryset):
+        all_codes = [c[0] for c in EventManager.PERMISSION_CHOICES]
+        for m in queryset:
+            m.permissions = list(set((m.permissions or []) + all_codes))
+            m.save()
+        self.message_user(request, "Granted all permissions to selected managers")
+    grant_all_permissions.short_description = "Grant all permissions"
+
+    def revoke_all_permissions(self, request, queryset):
+        for m in queryset:
+            m.permissions = []
+            m.save()
+        self.message_user(request, "Revoked all permissions from selected managers")
+    revoke_all_permissions.short_description = "Revoke all permissions"
+
+
+# ============ BatchManager admin ============
+
+@admin.register(BatchManager)
+class BatchManagerAdmin(admin.ModelAdmin):
+    list_display = ['batch', 'event_name', 'manager_user', 'can_activate', 'can_verify', 'assigned_by', 'created_at']
+    list_filter = ['can_activate', 'can_verify', 'batch__event', 'created_at']
+    search_fields = ['batch__batch_number', 'batch__event__name', 'manager__user__username', 'manager__user__email']
+    autocomplete_fields = ['batch', 'manager', 'assigned_by']
+    list_select_related = ['batch__event', 'manager__user', 'assigned_by']
+    readonly_fields = ['created_at', 'updated_at']
+
+    actions = ['enable_activation', 'disable_activation', 'enable_verification', 'disable_verification']
+
+    def event_name(self, obj):
+        return obj.batch.event.name
+    event_name.short_description = 'Event'
+
+    def manager_user(self, obj):
+        return obj.manager.user
+    manager_user.short_description = 'Manager User'
+
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.assigned_by_id:
+            obj.assigned_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def enable_activation(self, request, queryset):
+        updated = queryset.update(can_activate=True)
+        self.message_user(request, f"Enabled activation for {updated} assignment(s)")
+    enable_activation.short_description = "Enable activation"
+
+    def disable_activation(self, request, queryset):
+        updated = queryset.update(can_activate=False)
+        self.message_user(request, f"Disabled activation for {updated} assignment(s)")
+    disable_activation.short_description = "Disable activation"
+
+    def enable_verification(self, request, queryset):
+        updated = queryset.update(can_verify=True)
+        self.message_user(request, f"Enabled verification for {updated} assignment(s)")
+    enable_verification.short_description = "Enable verification"
+
+    def disable_verification(self, request, queryset):
+        updated = queryset.update(can_verify=False)
+        self.message_user(request, f"Disabled verification for {updated} assignment(s)")
+    disable_verification.short_description = "Disable verification"

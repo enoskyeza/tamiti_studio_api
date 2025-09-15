@@ -9,6 +9,7 @@ from rest_framework import serializers as drf_serializers
 
 
 from config.settings import base
+from django.conf import settings
 from users.serializers import RegisterSerializer, LoginSerializer, PasswordResetRequestSerializer, \
     PasswordResetConfirmSerializer, UserSerializer
 from users.tokens import account_activation_token, decode_uid
@@ -66,7 +67,9 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             httponly=True,
             secure=not base.DEBUG,
             samesite="None" if not base.DEBUG else "Lax",
-            max_age=24 * 60 * 60
+            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+            max_age=24 * 60 * 60,
+            path='/'
         )
 
         return res
@@ -134,9 +137,11 @@ class LoginView(generics.GenericAPIView):
             key='refresh_token',
             value=str(refresh),
             httponly=True,
-            secure=False,  # Set to True in production with HTTPS
-            samesite="Lax",
-            max_age=cookie_max_age
+            secure=not base.DEBUG,
+            samesite="None" if not base.DEBUG else "Lax",
+            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+            max_age=cookie_max_age,
+            path='/'
         )
 
         print("✅ Login success, response prepared and refresh_token cookie set.")
