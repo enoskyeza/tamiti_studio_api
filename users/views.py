@@ -6,7 +6,8 @@ from rest_framework_simplejwt.tokens import RefreshToken, AccessToken, TokenErro
 from rest_framework.views import APIView
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 from rest_framework import serializers as drf_serializers
-
+import logging
+from django.utils import timezone
 
 from config.settings import base
 from django.conf import settings
@@ -15,6 +16,10 @@ from users.serializers import RegisterSerializer, LoginSerializer, PasswordReset
 from users.tokens import account_activation_token, decode_uid
 from users.models import User
 from users.utils import send_password_reset_email
+from django.contrib.auth import authenticate
+
+
+logger = logging.getLogger(__name__)
 
 def get_tokens_for_user(user):
     refresh = RefreshToken.for_user(user)
@@ -29,50 +34,110 @@ class CookieTokenRefreshView(generics.GenericAPIView):
     serializer_class = drf_serializers.Serializer
 
     def post(self, request):
-        print("\n========== 🔁 REFRESH TOKEN ATTEMPT ==========")
-        refresh_token = request.COOKIES.get('refresh_token')
-
-        if not refresh_token:
-            print("🚫 No refresh token found in cookies.")
-            print("========== ❌ REFRESH FAILED ❌ ==========\n")
-            return Response(
-                {"error": "No refresh token in cookies"},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        print("🍪 Received refresh token from cookie:", refresh_token)
-
+        print(f"DEBUG: Token refresh POST method called")
         try:
+            print(f"DEBUG: Inside try block")
+            logger.info(f"🔵 [TOKEN REFRESH] Refresh attempt started", extra={
+                'timestamp': timezone.now().isoformat(),
+                'ip_address': request.META.get('REMOTE_ADDR'),
+                'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+                'cookies_present': list(request.COOKIES.keys()),
+                'has_refresh_cookie': 'refresh_token' in request.COOKIES,
+            })
+            
+            refresh_token = request.COOKIES.get('refresh_token')
+
+            if not refresh_token:
+                logger.warning(f"🔴 [TOKEN REFRESH] No refresh token in cookies", extra={
+                    'timestamp': timezone.now().isoformat(),
+                    'available_cookies': list(request.COOKIES.keys()),
+                })
+                return Response({'error': 'Refresh token not found'}, status=400)
+
+            logger.info(f"🔵 [TOKEN REFRESH] Validating refresh token", extra={
+                'timestamp': timezone.now().isoformat(),
+                'token_preview': refresh_token[:20] + '...',
+                'token_length': len(refresh_token),
+            })
+            
             refresh = RefreshToken(refresh_token)
-        except TokenError as e:
-            print("❌ Refresh token error:", str(e))
-            print("========== ❌ REFRESH FAILED ❌ ==========\n")
-            return Response(
-                {"error": "Invalid or expired refresh token"},
-                status=status.HTTP_401_UNAUTHORIZED
+            print(f"DEBUG: RefreshToken created successfully")
+            
+            # Get user from the token payload
+            user_id = refresh.payload.get('user_id')
+            user = User.objects.get(id=user_id)
+            print(f"DEBUG: User retrieved: {user.id} - {user.username}")
+            
+            logger.info(f"🟢 [TOKEN REFRESH] Token validation successful", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'username': user.username,
+            })
+            
+            # Create response with new refresh token
+            new_refresh = RefreshToken.for_user(user)
+            print(f"DEBUG: New refresh token created")
+            
+            new_refresh_token = str(new_refresh)
+            print(f"DEBUG: New refresh token string: {len(new_refresh_token)} chars")
+            
+            new_access_token = str(new_refresh.access_token)
+            print(f"DEBUG: New access token string: {len(new_access_token)} chars")
+            
+            logger.info(f"🟢 [TOKEN REFRESH] New tokens generated", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'new_access_token_length': len(new_access_token),
+                'new_access_token_preview': new_access_token[:20] + '...',
+                'new_refresh_token_length': len(new_refresh_token),
+                'new_refresh_token_preview': new_refresh_token[:20] + '...',
+            })
+            
+            response = Response({
+                'access': new_access_token,
+            })
+
+            # Set new refresh token cookie
+            cookie_max_age = 7 * 24 * 60 * 60  # 7 days
+            response.set_cookie(
+                'refresh_token',
+                new_refresh_token,
+                httponly=True,
+                secure=not base.DEBUG,
+                samesite="None" if not base.DEBUG else "Lax",
+                domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+                max_age=cookie_max_age,
+                path='/'
             )
+            
+            logger.info(f"🟢 [TOKEN REFRESH] Response prepared with new tokens", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'new_refresh_preview': new_refresh_token[:20] + '...',
+                'cookie_domain': getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+            })
 
-        new_access = str(refresh.access_token)
-        new_refresh = str(refresh)
+            return response
 
-        print("✅ Refresh successful")
-        print("🔐 New access token:", new_access)
-        print("🔁 New refresh token:", new_refresh)
-        print("========== ✅ REFRESH SUCCESS ✅ ==========\n")
-
-        res = Response({"access": new_access}, status=200)
-        res.set_cookie(
-            key='refresh_token',
-            value=new_refresh,
-            httponly=True,
-            secure=not base.DEBUG,
-            samesite="None" if not base.DEBUG else "Lax",
-            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
-            max_age=24 * 60 * 60,
-            path='/'
-        )
-
-        return res
+        except TokenError as e:
+            logger.warning(f"🔴 [TOKEN REFRESH] Token validation failed", extra={
+                'timestamp': timezone.now().isoformat(),
+                'error': str(e),
+                'token_preview': refresh_token[:20] + '...',
+            })
+            return Response({'error': 'Invalid or expired refresh token'}, status=400)
+        except Exception as e:
+            import traceback
+            logger.error(f"🔴 [TOKEN REFRESH] Unexpected error", extra={
+                'timestamp': timezone.now().isoformat(),
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'traceback': traceback.format_exc(),
+            })
+            # Also print to console for immediate debugging
+            print(f"TOKEN REFRESH ERROR: {type(e).__name__}: {str(e)}")
+            print(f"TRACEBACK: {traceback.format_exc()}")
+            return Response({'error': 'Token refresh failed'}, status=500)
 
 
 class CurrentUserView(generics.GenericAPIView):
@@ -80,15 +145,40 @@ class CurrentUserView(generics.GenericAPIView):
     serializer_class = UserSerializer
 
     def get(self, request):
-
-        # print("\n========== 🙋‍♂️ CURRENT USER ATTEMPT ==========")
-        # print("👤 User:", request.user)
-        # print("🛡️ Authenticated:", request.user.is_authenticated)
-        # print("🔐 Headers received:", request.headers.get("Authorization", "❌ No Authorization header"))
-        # print("========== END CURRENT USER ==========\n")
-
-        serializer = self.get_serializer(request.user)
-        return Response(serializer.data)
+        logger.info(f"🔵 [USER ME] Request started", extra={
+            'timestamp': timezone.now().isoformat(),
+            'user_id': request.user.id if request.user.is_authenticated else None,
+            'username': request.user.username if request.user.is_authenticated else None,
+            'is_authenticated': request.user.is_authenticated,
+            'auth_header_present': 'HTTP_AUTHORIZATION' in request.META,
+            'ip_address': request.META.get('REMOTE_ADDR'),
+        })
+        
+        if not request.user.is_authenticated:
+            logger.warning(f"🔴 [USER ME] User not authenticated", extra={
+                'timestamp': timezone.now().isoformat(),
+                'auth_header_present': 'HTTP_AUTHORIZATION' in request.META,
+            })
+            return Response({'error': 'Authentication required'}, status=401)
+        
+        user_data = {
+            'id': request.user.id,
+            'username': request.user.username,
+            'email': request.user.email,
+            'first_name': request.user.first_name,
+            'last_name': request.user.last_name,
+            'is_staff': request.user.is_staff,
+            'is_superuser': request.user.is_superuser,
+        }
+        
+        logger.info(f"🟢 [USER ME] Response prepared", extra={
+            'timestamp': timezone.now().isoformat(),
+            'user_id': request.user.id,
+            'username': request.user.username,
+            'response_keys': list(user_data.keys()),
+        })
+        
+        return Response(user_data)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -107,46 +197,93 @@ class LoginView(generics.GenericAPIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        print("\n================== 🌐 LOGIN ATTEMPT ==================")
-        print("📩 Endpoint hit: /api/users/login/")
-        print("📦 Raw data from frontend:", request.data)
+        logger.info(f"🔵 [AUTH LOGIN] Login attempt started", extra={
+            'timestamp': timezone.now().isoformat(),
+            'ip_address': request.META.get('REMOTE_ADDR'),
+            'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+            'request_data_keys': list(request.data.keys()),
+            'has_username': 'username' in request.data,
+            'has_password': 'password' in request.data,
+        })
+        
+        username = request.data.get('username')
+        password = request.data.get('password')
 
-        serializer = self.get_serializer(data=request.data)
+        if not username or not password:
+            logger.warning(f"🔴 [AUTH LOGIN] Missing credentials", extra={
+                'timestamp': timezone.now().isoformat(),
+                'has_username': bool(username),
+                'has_password': bool(password),
+            })
+            return Response({'error': 'Username and password required'}, status=400)
 
-        try:
-            serializer.is_valid(raise_exception=True)
-        except Exception as e:
-            print("❌ serializer.is_valid() raised an error")
-            print("🛑 Validation errors:", serializer.errors)
-            print("================== ❌ END LOGIN ATTEMPT ❌ ==================\n")
-            raise e
+        user = authenticate(request, username=username, password=password)
+        if user:
+            logger.info(f"🟢 [AUTH LOGIN] Authentication successful", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'username': user.username,
+                'is_active': user.is_active,
+            })
+            
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            refresh_token = str(refresh)
+            
+            logger.info(f"🟢 [AUTH LOGIN] Tokens generated", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'access_token_length': len(access_token),
+                'refresh_token_length': len(refresh_token),
+                'access_preview': access_token[:20] + '...',
+                'refresh_preview': refresh_token[:20] + '...',
+            })
 
-        user = serializer.validated_data
-        print("✅ User validated and returned from serializer:", user)
+            # Create response
+            response = Response({
+                'access': access_token,
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'is_staff': user.is_staff,
+                    'is_superuser': user.is_superuser,
+                }
+            })
 
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
+            # Set refresh token cookie
+            cookie_max_age = 7 * 24 * 60 * 60  # 7 days
+            response.set_cookie(
+                'refresh_token',
+                refresh_token,
+                max_age=cookie_max_age,
+                httponly=True,
+                secure=not base.DEBUG,
+                samesite="None" if not base.DEBUG else "Lax",
+                domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+                path='/'
+            )
+            
+            logger.info(f"🟢 [AUTH LOGIN] Response prepared with cookie", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'cookie_domain': getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+                'cookie_secure': not base.DEBUG,
+                'cookie_samesite': "None" if not base.DEBUG else "Lax",
+                'cookie_max_age': cookie_max_age,
+            })
 
-        print("🎫 Access token generated:", access_token)
-        print("🔁 Refresh token generated:", str(refresh))
-
-        res = Response({"access": access_token}, status=200)
-
-        cookie_max_age = 24 * 60 * 60
-        res.set_cookie(
-            key='refresh_token',
-            value=str(refresh),
-            httponly=True,
-            secure=not base.DEBUG,
-            samesite="None" if not base.DEBUG else "Lax",
-            domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
-            max_age=cookie_max_age,
-            path='/'
-        )
-
-        print("✅ Login success, response prepared and refresh_token cookie set.")
-        print("================== ✅ END LOGIN ATTEMPT ✅ ==================\n")
-        return res
+            return response
+        else:
+            logger.warning(f"🔴 [AUTH LOGIN] Authentication failed", extra={
+                'timestamp': timezone.now().isoformat(),
+                'username': username,
+                'ip_address': request.META.get('REMOTE_ADDR'),
+            })
+            return Response({'error': 'Invalid credentials'}, status=401)
 
 
 class VerifyEmailView(APIView):
