@@ -45,6 +45,7 @@ urlpatterns = [
     path('api/dashboard/', include('dashboard.urls')),
     path('api/planner/', include('planner.urls')),
     path('api/permissions/', include('permissions.urls')),
+    path('api/ticketing/', include('ticketing.urls')),
 
     # swagger endpoints
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
