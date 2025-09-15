@@ -34,24 +34,26 @@ class CookieTokenRefreshView(generics.GenericAPIView):
     serializer_class = drf_serializers.Serializer
 
     def post(self, request):
-        logger.info(f"🔵 [TOKEN REFRESH] Refresh attempt started", extra={
-            'timestamp': timezone.now().isoformat(),
-            'ip_address': request.META.get('REMOTE_ADDR'),
-            'user_agent': request.META.get('HTTP_USER_AGENT', ''),
-            'cookies_present': list(request.COOKIES.keys()),
-            'has_refresh_cookie': 'refresh_token' in request.COOKIES,
-        })
-        
-        refresh_token = request.COOKIES.get('refresh_token')
-
-        if not refresh_token:
-            logger.warning(f"🔴 [TOKEN REFRESH] No refresh token in cookies", extra={
-                'timestamp': timezone.now().isoformat(),
-                'available_cookies': list(request.COOKIES.keys()),
-            })
-            return Response({'error': 'Refresh token not found'}, status=400)
-
+        print(f"DEBUG: Token refresh POST method called")
         try:
+            print(f"DEBUG: Inside try block")
+            logger.info(f"🔵 [TOKEN REFRESH] Refresh attempt started", extra={
+                'timestamp': timezone.now().isoformat(),
+                'ip_address': request.META.get('REMOTE_ADDR'),
+                'user_agent': request.META.get('HTTP_USER_AGENT', ''),
+                'cookies_present': list(request.COOKIES.keys()),
+                'has_refresh_cookie': 'refresh_token' in request.COOKIES,
+            })
+            
+            refresh_token = request.COOKIES.get('refresh_token')
+
+            if not refresh_token:
+                logger.warning(f"🔴 [TOKEN REFRESH] No refresh token in cookies", extra={
+                    'timestamp': timezone.now().isoformat(),
+                    'available_cookies': list(request.COOKIES.keys()),
+                })
+                return Response({'error': 'Refresh token not found'}, status=400)
+
             logger.info(f"🔵 [TOKEN REFRESH] Validating refresh token", extra={
                 'timestamp': timezone.now().isoformat(),
                 'token_preview': refresh_token[:20] + '...',
@@ -59,7 +61,12 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             })
             
             refresh = RefreshToken(refresh_token)
-            user = refresh.get_user()
+            print(f"DEBUG: RefreshToken created successfully")
+            
+            # Get user from the token payload
+            user_id = refresh.payload.get('user_id')
+            user = User.objects.get(id=user_id)
+            print(f"DEBUG: User retrieved: {user.id} - {user.username}")
             
             logger.info(f"🟢 [TOKEN REFRESH] Token validation successful", extra={
                 'timestamp': timezone.now().isoformat(),
@@ -67,19 +74,24 @@ class CookieTokenRefreshView(generics.GenericAPIView):
                 'username': user.username,
             })
             
-            # Generate new access token
-            new_access_token = str(refresh.access_token)
-            
-            logger.info(f"🟢 [TOKEN REFRESH] New access token generated", extra={
-                'timestamp': timezone.now().isoformat(),
-                'user_id': user.id,
-                'new_token_length': len(new_access_token),
-                'new_token_preview': new_access_token[:20] + '...',
-            })
-
             # Create response with new refresh token
             new_refresh = RefreshToken.for_user(user)
+            print(f"DEBUG: New refresh token created")
+            
             new_refresh_token = str(new_refresh)
+            print(f"DEBUG: New refresh token string: {len(new_refresh_token)} chars")
+            
+            new_access_token = str(new_refresh.access_token)
+            print(f"DEBUG: New access token string: {len(new_access_token)} chars")
+            
+            logger.info(f"🟢 [TOKEN REFRESH] New tokens generated", extra={
+                'timestamp': timezone.now().isoformat(),
+                'user_id': user.id,
+                'new_access_token_length': len(new_access_token),
+                'new_access_token_preview': new_access_token[:20] + '...',
+                'new_refresh_token_length': len(new_refresh_token),
+                'new_refresh_token_preview': new_refresh_token[:20] + '...',
+            })
             
             response = Response({
                 'access': new_access_token,
@@ -115,11 +127,16 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             })
             return Response({'error': 'Invalid or expired refresh token'}, status=400)
         except Exception as e:
+            import traceback
             logger.error(f"🔴 [TOKEN REFRESH] Unexpected error", extra={
                 'timestamp': timezone.now().isoformat(),
                 'error': str(e),
                 'error_type': type(e).__name__,
+                'traceback': traceback.format_exc(),
             })
+            # Also print to console for immediate debugging
+            print(f"TOKEN REFRESH ERROR: {type(e).__name__}: {str(e)}")
+            print(f"TRACEBACK: {traceback.format_exc()}")
             return Response({'error': 'Token refresh failed'}, status=500)
 
 
@@ -247,7 +264,6 @@ class LoginView(generics.GenericAPIView):
                 secure=not base.DEBUG,
                 samesite="None" if not base.DEBUG else "Lax",
                 domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
-                max_age=24 * 60 * 60,
                 path='/'
             )
             
