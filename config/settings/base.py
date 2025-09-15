@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'comments',
     'permissions',
     'dashboard',
+    'ticketing',
 ]
 
 MIDDLEWARE = [

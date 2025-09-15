@@ -29,6 +29,8 @@ class UserSerializer(serializers.ModelSerializer):
             "streak_days",
             "current_streak_started",
             "preferences",
+            "is_superuser",
+            "is_staff",
         ]
 
 
