@@ -5,7 +5,7 @@ from django.urls import reverse
 from django.db.models import Count
 from .models import (
     Event, EventManager, BatchManager,
-    TicketType, Batch, Ticket, ScanLog, BatchExport,
+    TicketType, Batch, Ticket, ScanLog, BatchExport, TemporaryUser,
 )
 
 # ===== Forms and Inlines (top-level to avoid NameError) =====
@@ -41,6 +41,14 @@ class EventManagerInline(admin.StackedInline):
     show_change_link = True
 
 
+class TemporaryUserInline(admin.TabularInline):
+    model = TemporaryUser
+    extra = 0
+    fields = ['username', 'role', 'is_active', 'expires_at', 'can_activate', 'can_verify']
+    readonly_fields = ['last_login', 'login_count']
+    show_change_link = True
+
+
 @admin.register(Event)
 class EventAdmin(admin.ModelAdmin):
     list_display = ['name', 'date', 'venue', 'status', 'created_by', 'created_at']
@@ -58,7 +66,7 @@ class EventAdmin(admin.ModelAdmin):
         }),
     )
     
-    inlines = [EventManagerInline]
+    inlines = [EventManagerInline, TemporaryUserInline]
     
     def save_model(self, request, obj, form, change):
         if not change:
@@ -407,3 +415,125 @@ class BatchManagerAdmin(admin.ModelAdmin):
         updated = queryset.update(can_verify=False)
         self.message_user(request, f"Disabled verification for {updated} assignment(s)")
     disable_verification.short_description = "Disable verification"
+
+
+# ============ TemporaryUser admin ============
+
+class TemporaryUserAdminForm(forms.ModelForm):
+    password = forms.CharField(
+        widget=forms.PasswordInput,
+        required=False,
+        help_text="Leave blank to keep current password"
+    )
+    confirm_password = forms.CharField(
+        widget=forms.PasswordInput,
+        required=False,
+        help_text="Confirm new password"
+    )
+    
+    class Meta:
+        model = TemporaryUser
+        fields = [
+            'username', 'password', 'confirm_password', 'event', 'role',
+            'is_active', 'expires_at', 'can_activate', 'can_verify', 'can_scan'
+        ]
+    
+    def clean(self):
+        cleaned_data = super().clean()
+        password = cleaned_data.get('password')
+        confirm_password = cleaned_data.get('confirm_password')
+        
+        if password and password != confirm_password:
+            raise forms.ValidationError("Passwords don't match")
+        
+        return cleaned_data
+    
+    def save(self, commit=True):
+        temp_user = super().save(commit=False)
+        password = self.cleaned_data.get('password')
+        
+        if password:
+            temp_user.set_password(password)
+        
+        if commit:
+            temp_user.save()
+        return temp_user
+
+
+@admin.register(TemporaryUser)
+class TemporaryUserAdmin(admin.ModelAdmin):
+    form = TemporaryUserAdminForm
+    list_display = [
+        'username', 'event', 'role', 'is_active', 'expires_at', 
+        'is_expired_display', 'login_count', 'last_login', 'created_by'
+    ]
+    list_filter = ['role', 'is_active', 'event', 'expires_at', 'created_at']
+    search_fields = ['username', 'event__name', 'created_by__username']
+    autocomplete_fields = ['event', 'created_by']
+    readonly_fields = ['created_at', 'updated_at', 'last_login', 'login_count']
+    list_select_related = ['event', 'created_by']
+    
+    actions = [
+        'activate_users', 'deactivate_users', 'extend_expiry', 
+        'enable_all_permissions', 'disable_all_permissions'
+    ]
+    
+    fieldsets = (
+        (None, {
+            'fields': ('username', 'password', 'confirm_password', 'event', 'role', 'is_active')
+        }),
+        ('Permissions', {
+            'fields': ('can_activate', 'can_verify', 'can_scan')
+        }),
+        ('Expiry', {
+            'fields': ('expires_at',)
+        }),
+        ('Statistics', {
+            'fields': ('last_login', 'login_count'),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def is_expired_display(self, obj):
+        if obj.is_expired():
+            return format_html('<span style="color: red;">Expired</span>')
+        return format_html('<span style="color: green;">Active</span>')
+    is_expired_display.short_description = 'Status'
+    
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.created_by_id:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def activate_users(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Activated {updated} temporary user(s)")
+    activate_users.short_description = "Activate selected users"
+    
+    def deactivate_users(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} temporary user(s)")
+    deactivate_users.short_description = "Deactivate selected users"
+    
+    def extend_expiry(self, request, queryset):
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        new_expiry = timezone.now() + timedelta(days=30)
+        updated = queryset.update(expires_at=new_expiry)
+        self.message_user(request, f"Extended expiry for {updated} user(s) by 30 days")
+    extend_expiry.short_description = "Extend expiry by 30 days"
+    
+    def enable_all_permissions(self, request, queryset):
+        updated = queryset.update(can_activate=True, can_verify=True, can_scan=True)
+        self.message_user(request, f"Enabled all permissions for {updated} user(s)")
+    enable_all_permissions.short_description = "Enable all permissions"
+    
+    def disable_all_permissions(self, request, queryset):
+        updated = queryset.update(can_activate=False, can_verify=False, can_scan=False)
+        self.message_user(request, f"Disabled all permissions for {updated} user(s)")
+    disable_all_permissions.short_description = "Disable all permissions"
