@@ -22,12 +22,14 @@ class UserSerializer(serializers.ModelSerializer):
 class EventSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     stats = serializers.SerializerMethodField()
+    ticket_types = serializers.SerializerMethodField()
     
     class Meta:
         model = Event
         fields = [
             'id', 'name', 'description', 'date', 'venue', 'status',
-            'created_by', 'created_by_name', 'created_at', 'updated_at', 'stats'
+            'created_by', 'created_by_name', 'created_at', 'updated_at', 
+            'stats', 'ticket_types'
         ]
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
     
@@ -51,8 +53,13 @@ class EventSerializer(serializers.ModelSerializer):
             'activated_tickets': activated_tickets,
             'scanned_tickets': scanned_tickets,
             'unused_tickets': unused_tickets,
-            'voided_tickets': voided_tickets
+            'voided_tickets': voided_tickets,
         }
+    
+    def get_ticket_types(self, obj):
+        """Get ticket types for this event"""
+        ticket_types = obj.ticket_types.filter(is_active=True).order_by('name')
+        return TicketTypeSerializer(ticket_types, many=True).data
 
 
 class EventManagerSerializer(serializers.ModelSerializer):
