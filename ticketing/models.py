@@ -49,18 +49,79 @@ class EventManager(BaseModel):
     ]
     
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='managers')
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='managed_events')
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='managed_events', null=True, blank=True)
+    temp_user = models.ForeignKey('TemporaryUser', on_delete=models.CASCADE, related_name='managed_events', null=True, blank=True)
+    is_temporary = models.BooleanField(default=False, help_text="True if this manager is a temporary user")
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
     permissions = models.JSONField(default=list, help_text="List of permission codes")
     assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='assigned_managers')
     is_active = models.BooleanField(default=True)
     
     class Meta:
-        unique_together = ['event', 'user']
-        ordering = ['role', 'user__username']
+        ordering = ['role', 'user__username', 'temp_user__username']
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(user__isnull=False, temp_user__isnull=True) | 
+                      models.Q(user__isnull=True, temp_user__isnull=False),
+                name='exactly_one_user_type'
+            ),
+            models.UniqueConstraint(
+                fields=['event', 'user'],
+                condition=models.Q(user__isnull=False),
+                name='unique_regular_user_per_event'
+            ),
+            models.UniqueConstraint(
+                fields=['event', 'temp_user'],
+                condition=models.Q(temp_user__isnull=False),
+                name='unique_temp_user_per_event_manager'
+            ),
+        ]
+    
+    def clean(self):
+        """Validate that exactly one user type is set"""
+        from django.core.exceptions import ValidationError
+        
+        if not self.user and not self.temp_user:
+            raise ValidationError("Either user or temp_user must be set")
+        
+        if self.user and self.temp_user:
+            raise ValidationError("Cannot set both user and temp_user")
+        
+        # Ensure is_temporary matches the user type
+        if self.temp_user and not self.is_temporary:
+            self.is_temporary = True
+        elif self.user and self.is_temporary:
+            self.is_temporary = False
+    
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
     
     def __str__(self):
-        return f"{self.user.username} - {self.event.name} ({self.get_role_display()})"
+        if self.is_temporary and self.temp_user:
+            return f"{self.temp_user.username} - {self.event.name} ({self.get_role_display()}) [TEMP]"
+        elif self.user:
+            return f"{self.user.username} - {self.event.name} ({self.get_role_display()})"
+        return f"EventManager {self.id} - {self.event.name}"
+    
+    @property
+    def manager_user(self):
+        """Get the actual user object (regular or temporary)"""
+        return self.temp_user if self.is_temporary else self.user
+    
+    @property
+    def username(self):
+        """Get username regardless of user type"""
+        manager = self.manager_user
+        return manager.username if manager else None
+    
+    @property
+    def email(self):
+        """Get email regardless of user type"""
+        manager = self.manager_user
+        if hasattr(manager, 'email'):
+            return manager.email
+        return f"{manager.username}@temp.local" if manager else None
     
     def has_permission(self, permission_code):
         """Check if manager has specific permission"""
@@ -341,3 +402,64 @@ class BatchExport(BaseModel):
     
     def __str__(self):
         return f"{self.batch.batch_number} - {self.export_type.upper()} export"
+
+
+class TemporaryUser(BaseModel):
+    """Temporary event-specific user accounts for staff/volunteers"""
+    TEMP_USER_ROLES = [
+        ('scanner', 'Scanner'),
+        ('activator', 'Activator'),
+        ('verifier', 'Verifier'),
+        ('staff', 'Staff'),
+    ]
+    
+    username = models.CharField(max_length=150, unique=True)
+    password_hash = models.CharField(max_length=128)
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='temporary_users')
+    role = models.CharField(max_length=20, choices=TEMP_USER_ROLES)
+    is_active = models.BooleanField(default=True)
+    expires_at = models.DateTimeField()
+    created_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='created_temp_users')
+    
+    # Permissions
+    can_activate = models.BooleanField(default=False)
+    can_verify = models.BooleanField(default=False)
+    can_scan = models.BooleanField(default=True)
+    
+    # Tracking
+    last_login = models.DateTimeField(null=True, blank=True)
+    login_count = models.PositiveIntegerField(default=0)
+    
+    class Meta:
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['username', 'event'],
+                name='unique_temp_user_username_per_event'
+            ),
+        ]
+    
+    def __str__(self):
+        return f"{self.username} ({self.event.name})"
+    
+    def is_expired(self):
+        """Check if the temporary user has expired"""
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+    
+    def set_password(self, raw_password):
+        """Set password for temporary user"""
+        from django.contrib.auth.hashers import make_password
+        self.password_hash = make_password(raw_password)
+    
+    def check_password(self, raw_password):
+        """Check password for temporary user"""
+        from django.contrib.auth.hashers import check_password
+        return check_password(raw_password, self.password_hash)
+    
+    def record_login(self):
+        """Record a login attempt"""
+        from django.utils import timezone
+        self.last_login = timezone.now()
+        self.login_count += 1
+        self.save(update_fields=['last_login', 'login_count'])

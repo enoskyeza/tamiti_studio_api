@@ -643,7 +643,7 @@ class PersonalAccountTransfer(BaseModel):
     @property
     def total_debit_amount(self):
         """Total amount debited from source account (amount + fee)"""
-        return self.amount + self.transfer_fee
+        return (self.amount or Decimal('0')) + (self.transfer_fee or Decimal('0'))
 
     def __str__(self):
         return f"Transfer: {self.amount} from {self.from_account.name} to {self.to_account.name}"

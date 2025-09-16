@@ -1,7 +1,10 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import Event, EventManager, BatchManager, TicketType, Batch, Ticket, ScanLog, BatchExport
-
+from django.utils import timezone
+from .models import (
+    Event, EventManager, BatchManager,
+    TicketType, Batch, Ticket, ScanLog, BatchExport, TemporaryUser,
+)
 
 class UserSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
@@ -53,27 +56,57 @@ class EventSerializer(serializers.ModelSerializer):
 
 
 class EventManagerSerializer(serializers.ModelSerializer):
-    user_name = serializers.CharField(source='user.username', read_only=True)
-    user_email = serializers.CharField(source='user.email', read_only=True)
+    username = serializers.SerializerMethodField()
+    email = serializers.SerializerMethodField()
+    user_type = serializers.SerializerMethodField()
+    user_display = serializers.SerializerMethodField()
     added_by_name = serializers.CharField(source='assigned_by.username', read_only=True)
     
     class Meta:
         model = EventManager
         fields = [
-            'id', 'user', 'user_name', 'user_email', 'role', 'permissions',
-            'assigned_by', 'added_by_name', 'is_active', 'created_at'
+            'id', 'event', 'user', 'temp_user', 'is_temporary', 'role', 
+            'permissions', 'assigned_by', 'added_by_name', 'is_active', 'created_at',
+            'username', 'email', 'user_type', 'user_display'
         ]
-        read_only_fields = ['id', 'assigned_by', 'created_at']
+        read_only_fields = ['id', 'created_at', 'assigned_by']
+    
+    def get_username(self, obj):
+        return obj.username
+    
+    def get_email(self, obj):
+        return obj.email
+    
+    def get_user_type(self, obj):
+        return 'temporary' if obj.is_temporary else 'regular'
+    
+    def get_user_display(self, obj):
+        manager = obj.manager_user
+        if not manager:
+            return "Unknown User"
+        
+        if obj.is_temporary:
+            return f"{manager.username} (Temporary)"
+        else:
+            name = f"{manager.first_name} {manager.last_name}".strip() if hasattr(manager, 'first_name') and manager.first_name else manager.username
+            return name
 
 
 class EventManagerCreateSerializer(serializers.Serializer):
-    email = serializers.EmailField()
+    email = serializers.EmailField(required=False)
+    user_id = serializers.CharField(required=False)
+    is_temporary = serializers.BooleanField(required=False, default=False)
     role = serializers.ChoiceField(choices=EventManager.ROLE_CHOICES, default='manager')
     permissions = serializers.ListField(
         child=serializers.CharField(),
         required=False,
         default=list
     )
+    
+    def validate(self, data):
+        if not data.get('email') and not data.get('user_id'):
+            raise serializers.ValidationError("Either email or user_id must be provided")
+        return data
 
 
 class TicketTypeSerializer(serializers.ModelSerializer):
@@ -217,6 +250,8 @@ class TicketSerializer(serializers.ModelSerializer):
     scanned_by_name = serializers.CharField(source='scanned_by.username', read_only=True)
     ticket_type_name = serializers.CharField(source='ticket_type.name', read_only=True)
     buyer_info = serializers.SerializerMethodField()
+    activated_by = serializers.SerializerMethodField()
+    scanned_by = serializers.SerializerMethodField()
     
     class Meta:
         model = Ticket
@@ -231,6 +266,24 @@ class TicketSerializer(serializers.ModelSerializer):
             'id', 'short_code', 'qr_code', 'activated_at', 'activated_by',
             'scanned_at', 'scanned_by', 'created_at'
         ]
+    
+    def get_activated_by(self, obj):
+        if obj.activated_by:
+            return {
+                'id': obj.activated_by.id,
+                'username': obj.activated_by.username,
+                'email': obj.activated_by.email
+            }
+        return None
+    
+    def get_scanned_by(self, obj):
+        if obj.scanned_by:
+            return {
+                'id': obj.scanned_by.id,
+                'username': obj.scanned_by.username,
+                'email': obj.scanned_by.email
+            }
+        return None
     
     def get_buyer_info(self, obj):
         buyer_info = {}
@@ -331,3 +384,55 @@ class BatchManagerCreateSerializer(serializers.Serializer):
     manager_id = serializers.IntegerField()
     can_activate = serializers.BooleanField(default=True)
     can_verify = serializers.BooleanField(default=True)
+
+
+class TemporaryUserSerializer(serializers.ModelSerializer):
+    event_name = serializers.CharField(source='event.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    is_expired = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = TemporaryUser
+        fields = [
+            'id', 'username', 'event', 'event_name', 'role', 'is_active',
+            'expires_at', 'created_by', 'created_by_name', 'can_activate',
+            'can_verify', 'can_scan', 'last_login', 'login_count',
+            'created_at', 'is_expired'
+        ]
+        read_only_fields = ['id', 'created_by', 'created_at', 'last_login', 'login_count']
+    
+    def get_is_expired(self, obj):
+        return obj.is_expired()
+
+
+class TemporaryUserCreateSerializer(serializers.ModelSerializer):
+    password = serializers.CharField(write_only=True, min_length=6)
+    confirm_password = serializers.CharField(write_only=True)
+    
+    class Meta:
+        model = TemporaryUser
+        fields = [
+            'id', 'username', 'password', 'confirm_password', 'event', 'role',
+            'expires_at', 'can_activate', 'can_verify', 'can_scan'
+        ]
+        read_only_fields = ['id']
+    
+    def validate(self, attrs):
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError("Passwords don't match")
+        return attrs
+    
+    def create(self, validated_data):
+        password = validated_data.pop('password')
+        validated_data.pop('confirm_password')
+        
+        temp_user = TemporaryUser(**validated_data)
+        temp_user.set_password(password)
+        temp_user.save()
+        return temp_user
+
+
+class TemporaryUserLoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField()
+    event_id = serializers.IntegerField(required=False)
