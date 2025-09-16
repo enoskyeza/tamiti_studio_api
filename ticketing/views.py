@@ -771,9 +771,15 @@ class TicketViewSet(viewsets.ModelViewSet):
             scan_log.error_message = 'Ticket not found'
             scan_log.save()
             
+            # Provide more specific error message based on whether event filtering was applied
+            if event_id:
+                error_message = 'Code is not in the system or not part of the selected event'
+            else:
+                error_message = 'QR code not found in system'
+            
             return Response({
                 'success': False,
-                'error': 'QR code not found in system',
+                'error': error_message,
                 'error_type': 'not_found'
             }, status=status.HTTP_404_NOT_FOUND)
         
