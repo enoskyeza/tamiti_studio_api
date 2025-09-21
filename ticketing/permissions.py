@@ -1,5 +1,5 @@
 from django.contrib.auth import get_user_model
-from .models import EventManager, BatchManager
+from .models import EventMembership, BatchMembership
 
 User = get_user_model()
 
@@ -14,7 +14,7 @@ class TicketingPermissionService:
             from .models import Event
             return Event.objects.all()
         
-        return EventManager.objects.filter(
+        return EventMembership.objects.filter(
             user=user, 
             is_active=True
         ).select_related('event').values_list('event', flat=True)
@@ -25,7 +25,7 @@ class TicketingPermissionService:
         if user.is_superuser:
             return True
         
-        return EventManager.objects.filter(
+        return EventMembership.objects.filter(
             user=user,
             event=event,
             is_active=True
@@ -38,13 +38,13 @@ class TicketingPermissionService:
             return True
         
         try:
-            manager = EventManager.objects.get(
+            membership = EventMembership.objects.get(
                 user=user,
                 event=event,
                 is_active=True
             )
-            return manager.has_permission(action)
-        except EventManager.DoesNotExist:
+            return membership.has_permission(action)
+        except EventMembership.DoesNotExist:
             return False
     
     @staticmethod
@@ -53,26 +53,26 @@ class TicketingPermissionService:
         if user.is_superuser:
             return True
         
-        # Check if user is event manager
-        event_manager = EventManager.objects.filter(
+        # Check if user is event member
+        event_membership = EventMembership.objects.filter(
             user=user,
             event=batch.event,
             is_active=True
         ).first()
         
-        if not event_manager:
+        if not event_membership:
             return False
         
         # Event owners can do everything
-        if event_manager.role == 'owner':
+        if event_membership.role == 'owner':
             return True
         
         # Check event-level permissions
-        if event_manager.has_permission(action):
+        if event_membership.has_permission(action):
             # Check if there are batch-specific restrictions
-            batch_assignment = BatchManager.objects.filter(
+            batch_assignment = BatchMembership.objects.filter(
                 batch=batch,
-                manager=event_manager
+                membership=event_membership
             ).first()
             
             if batch_assignment:
@@ -102,53 +102,60 @@ class TicketingPermissionService:
     @staticmethod
     def create_event_owner(event, user, assigned_by):
         """Create an event owner with full permissions"""
-        manager, created = EventManager.objects.get_or_create(
+        membership, created = EventMembership.objects.get_or_create(
             event=event,
             user=user,
             defaults={
                 'role': 'owner',
-                'permissions': [
-                    'activate_tickets',
-                    'verify_tickets', 
-                    'create_batches',
-                    'void_batches',
-                    'export_batches',
-                    'manage_staff',
-                    'view_reports'
-                ],
-                'assigned_by': assigned_by
+                'permissions': {
+                    'activate_tickets': True,
+                    'verify_tickets': True, 
+                    'create_batches': True,
+                    'void_batches': True,
+                    'export_batches': True,
+                    'manage_staff': True,
+                    'view_reports': True
+                },
+                'invited_by': assigned_by
             }
         )
-        return manager
+        return membership
     
     @staticmethod
     def create_event_manager(event, user, permissions, assigned_by):
         """Create an event manager with specific permissions"""
-        manager, created = EventManager.objects.get_or_create(
+        # Convert list permissions to dict format if needed
+        if isinstance(permissions, list):
+            permission_dict = {}
+            for perm in permissions:
+                permission_dict[perm] = True
+            permissions = permission_dict
+        
+        membership, created = EventMembership.objects.get_or_create(
             event=event,
             user=user,
             defaults={
                 'role': 'manager',
                 'permissions': permissions,
-                'assigned_by': assigned_by
+                'invited_by': assigned_by
             }
         )
         if not created:
-            # Update permissions if manager already exists
-            manager.permissions = permissions
-            manager.save()
-        return manager
+            # Update permissions if membership already exists
+            membership.permissions = permissions
+            membership.save()
+        return membership
     
     @staticmethod
-    def assign_manager_to_batch(batch, manager, can_activate=True, can_verify=True, assigned_by=None):
-        """Assign a manager to a specific batch"""
-        assignment, created = BatchManager.objects.get_or_create(
+    def assign_membership_to_batch(batch, membership, can_activate=True, can_verify=True, assigned_by=None):
+        """Assign a membership to a specific batch"""
+        assignment, created = BatchMembership.objects.get_or_create(
             batch=batch,
-            manager=manager,
+            membership=membership,
             defaults={
                 'can_activate': can_activate,
                 'can_verify': can_verify,
-                'assigned_by': assigned_by or manager.assigned_by
+                'assigned_by': assigned_by or membership.invited_by
             }
         )
         if not created:

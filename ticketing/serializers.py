@@ -1,22 +1,29 @@
 from rest_framework import serializers
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 from .models import (
-    Event, EventManager, BatchManager,
+    Event, EventMembership, BatchMembership,
     TicketType, Batch, Ticket, ScanLog, BatchExport, TemporaryUser,
 )
 
+User = get_user_model()
+
 class UserSerializer(serializers.ModelSerializer):
     name = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
     
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'name']
+        fields = ['id', 'username', 'email', 'first_name', 'last_name', 'name', 'phone', 'role', 
+                 'is_temporary', 'expires_at', 'created_for_event', 'is_expired']
     
     def get_name(self, obj):
         if obj.first_name and obj.last_name:
             return f"{obj.first_name} {obj.last_name}".strip()
         return obj.username
+    
+    def get_is_expired(self, obj):
+        return obj.is_expired() if hasattr(obj, 'is_expired') else False
 
 
 class EventSerializer(serializers.ModelSerializer):
@@ -62,58 +69,6 @@ class EventSerializer(serializers.ModelSerializer):
         return TicketTypeSerializer(ticket_types, many=True).data
 
 
-class EventManagerSerializer(serializers.ModelSerializer):
-    username = serializers.SerializerMethodField()
-    email = serializers.SerializerMethodField()
-    user_type = serializers.SerializerMethodField()
-    user_display = serializers.SerializerMethodField()
-    added_by_name = serializers.CharField(source='assigned_by.username', read_only=True)
-    
-    class Meta:
-        model = EventManager
-        fields = [
-            'id', 'event', 'user', 'temp_user', 'is_temporary', 'role', 
-            'permissions', 'assigned_by', 'added_by_name', 'is_active', 'created_at',
-            'username', 'email', 'user_type', 'user_display'
-        ]
-        read_only_fields = ['id', 'created_at', 'assigned_by']
-    
-    def get_username(self, obj):
-        return obj.username
-    
-    def get_email(self, obj):
-        return obj.email
-    
-    def get_user_type(self, obj):
-        return 'temporary' if obj.is_temporary else 'regular'
-    
-    def get_user_display(self, obj):
-        manager = obj.manager_user
-        if not manager:
-            return "Unknown User"
-        
-        if obj.is_temporary:
-            return f"{manager.username} (Temporary)"
-        else:
-            name = f"{manager.first_name} {manager.last_name}".strip() if hasattr(manager, 'first_name') and manager.first_name else manager.username
-            return name
-
-
-class EventManagerCreateSerializer(serializers.Serializer):
-    email = serializers.EmailField(required=False)
-    user_id = serializers.CharField(required=False)
-    is_temporary = serializers.BooleanField(required=False, default=False)
-    role = serializers.ChoiceField(choices=EventManager.ROLE_CHOICES, default='manager')
-    permissions = serializers.ListField(
-        child=serializers.CharField(),
-        required=False,
-        default=list
-    )
-    
-    def validate(self, data):
-        if not data.get('email') and not data.get('user_id'):
-            raise serializers.ValidationError("Either email or user_id must be provided")
-        return data
 
 
 class TicketTypeSerializer(serializers.ModelSerializer):
@@ -217,18 +172,21 @@ class BatchSerializer(serializers.ModelSerializer):
     event_name = serializers.CharField(source='event.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     layout = serializers.SerializerMethodField()
+    ticket_count = serializers.SerializerMethodField()
     
     class Meta:
         model = Batch
         fields = [
-            'id', 'batch_number', 'event', 'event_name', 'quantity',
+            'id', 'batch_number', 'event', 'event_name', 'quantity', 'ticket_count',
             'activated_count', 'scanned_count', 'voided_count', 'unused_count',
             'status', 'created_by', 'created_by_name', 'created_at',
-            'voided_at', 'voided_by', 'void_reason', 'layout'
+            'voided_at', 'voided_by', 'void_reason', 'layout',
+            'layout_columns', 'layout_rows', 'qr_size', 'include_short_code'
         ]
         read_only_fields = [
             'id', 'batch_number', 'activated_count', 'scanned_count',
-            'voided_count', 'unused_count', 'created_by', 'created_at'
+            'voided_count', 'unused_count', 'created_by', 'created_at',
+            'ticket_count'
         ]
     
     def get_layout(self, obj):
@@ -240,6 +198,9 @@ class BatchSerializer(serializers.ModelSerializer):
             'include_short_code': obj.include_short_code,
             'includeShortCode': obj.include_short_code,  # Legacy support
         }
+
+    def get_ticket_count(self, obj):
+        return obj.tickets.count()
 
 
 class BuyerInfoSerializer(serializers.Serializer):
@@ -253,6 +214,7 @@ class BuyerInfoSerializer(serializers.Serializer):
 class TicketSerializer(serializers.ModelSerializer):
     batch_number = serializers.CharField(source='batch.batch_number', read_only=True)
     event_name = serializers.CharField(source='batch.event.name', read_only=True)
+    event_date = serializers.CharField(source='batch.event.date', read_only=True)
     activated_by_name = serializers.CharField(source='activated_by.username', read_only=True)
     scanned_by_name = serializers.CharField(source='scanned_by.username', read_only=True)
     ticket_type_name = serializers.CharField(source='ticket_type.name', read_only=True)
@@ -263,7 +225,7 @@ class TicketSerializer(serializers.ModelSerializer):
     class Meta:
         model = Ticket
         fields = [
-            'id', 'batch', 'batch_number', 'event_name', 'short_code', 'qr_code',
+            'id', 'batch', 'batch_number', 'event_name', 'event_date', 'short_code', 'qr_code',
             'status', 'buyer_name', 'buyer_phone', 'buyer_email', 'ticket_type',
             'ticket_type_name', 'notes', 'activated_at', 'activated_by',
             'activated_by_name', 'scanned_at', 'scanned_by', 'scanned_by_name',
@@ -371,29 +333,10 @@ class EventStatsSerializer(serializers.Serializer):
     scan_rate = serializers.FloatField()
 
 
-class BatchManagerSerializer(serializers.ModelSerializer):
-    batch_number = serializers.CharField(source='batch.batch_number', read_only=True)
-    manager_name = serializers.CharField(source='manager.user.username', read_only=True)
-    manager_email = serializers.CharField(source='manager.user.email', read_only=True)
-    assigned_by_name = serializers.CharField(source='assigned_by.username', read_only=True)
-    
-    class Meta:
-        model = BatchManager
-        fields = [
-            'id', 'batch', 'batch_number', 'manager', 'manager_name', 'manager_email',
-            'can_activate', 'can_verify', 'assigned_by', 'assigned_by_name', 'created_at'
-        ]
-        read_only_fields = ['id', 'assigned_by', 'created_at']
-
-
-class BatchManagerCreateSerializer(serializers.Serializer):
-    batch_id = serializers.IntegerField()
-    manager_id = serializers.IntegerField()
-    can_activate = serializers.BooleanField(default=True)
-    can_verify = serializers.BooleanField(default=True)
 
 
 class TemporaryUserSerializer(serializers.ModelSerializer):
+    """DEPRECATED: Use UserSerializer with is_temporary=True instead"""
     event_name = serializers.CharField(source='event.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     is_expired = serializers.SerializerMethodField()
@@ -403,43 +346,275 @@ class TemporaryUserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'event', 'event_name', 'role', 'is_active',
             'expires_at', 'created_by', 'created_by_name', 'can_activate',
-            'can_verify', 'can_scan', 'last_login', 'login_count',
-            'created_at', 'is_expired'
+            'can_verify', 'can_scan', 'last_login', 'login_count', 'created_at', 'is_expired'
         ]
-        read_only_fields = ['id', 'created_by', 'created_at', 'last_login', 'login_count']
+        read_only_fields = ['created_by', 'last_login', 'login_count', 'created_at']
     
     def get_is_expired(self, obj):
         return obj.is_expired()
 
 
 class TemporaryUserCreateSerializer(serializers.ModelSerializer):
-    password = serializers.CharField(write_only=True, min_length=6)
-    confirm_password = serializers.CharField(write_only=True)
+    """Create temporary Users with the unified User model"""
+    password = serializers.CharField(write_only=True, min_length=6, required=False)
+    confirm_password = serializers.CharField(write_only=True, required=False)
+    created_for_event = serializers.PrimaryKeyRelatedField(
+        queryset=Event.objects.all()
+    )
+    # Legacy permission fields for backward compatibility
+    can_activate = serializers.BooleanField(write_only=True, default=True)
+    can_verify = serializers.BooleanField(write_only=True, default=True)
+    can_scan = serializers.BooleanField(write_only=True, default=True)
     
     class Meta:
-        model = TemporaryUser
+        model = User
         fields = [
-            'id', 'username', 'password', 'confirm_password', 'event', 'role',
-            'expires_at', 'can_activate', 'can_verify', 'can_scan'
+            'id', 'username', 'email', 'password', 'confirm_password', 
+            'created_for_event', 'expires_at', 'is_temporary',
+            'can_activate', 'can_verify', 'can_scan'
         ]
-        read_only_fields = ['id']
+        extra_kwargs = {
+            'is_temporary': {'default': True},
+            'email': {'required': False}
+        }
     
-    def validate(self, attrs):
-        if attrs['password'] != attrs['confirm_password']:
+    def validate(self, data):
+        password = data.get('password')
+        confirm_password = data.get('confirm_password')
+        
+        if password and confirm_password and password != confirm_password:
             raise serializers.ValidationError("Passwords don't match")
-        return attrs
+        return data
     
     def create(self, validated_data):
-        password = validated_data.pop('password')
-        validated_data.pop('confirm_password')
+        # Extract permission flags
+        can_activate = validated_data.pop('can_activate', True)
+        can_verify = validated_data.pop('can_verify', True) 
+        can_scan = validated_data.pop('can_scan', True)
         
-        temp_user = TemporaryUser(**validated_data)
-        temp_user.set_password(password)
-        temp_user.save()
-        return temp_user
+        # Handle password
+        password = validated_data.pop('password', None)
+        validated_data.pop('confirm_password', None)
+        
+        # Get event
+        event = validated_data.get('created_for_event')
+        if not event:
+            raise serializers.ValidationError("Event is required for temporary users")
+        
+        # Use the User model's create_temporary_user method
+        # Don't pass email as extra_field since create_temporary_user sets it
+        extra_fields = {}
+        if validated_data.get('email'):
+            extra_fields['email'] = validated_data.get('email')
+            
+        user, generated_password = User.create_temporary_user(
+            event=event,
+            username=validated_data.get('username'),
+            password=password,
+            expires_at=validated_data.get('expires_at'),
+            **extra_fields
+        )
+        
+        # Create EventMembership with permissions
+        from .models import EventMembership
+        permissions = {}
+        if can_activate:
+            permissions['activate_tickets'] = True
+        if can_verify or can_scan:
+            permissions['verify_tickets'] = True
+            
+        EventMembership.objects.create(
+            user=user,
+            event=event,
+            role='staff',
+            permissions=permissions,
+            invited_by=self.context['request'].user
+        )
+        
+        # Store generated password for response
+        user._generated_password = generated_password if not password else None
+        return user
 
 
 class TemporaryUserLoginSerializer(serializers.Serializer):
+    """DEPRECATED: Use standard JWT authentication instead"""
     username = serializers.CharField()
     password = serializers.CharField()
     event_id = serializers.IntegerField(required=False)
+
+
+class EventMembershipSerializer(serializers.ModelSerializer):
+    """Serializer for the new unified EventMembership model"""
+    user = UserSerializer(read_only=True)
+    user_id = serializers.IntegerField(write_only=True)
+    event_name = serializers.CharField(source='event.name', read_only=True)
+    invited_by_name = serializers.CharField(source='invited_by.username', read_only=True)
+    is_expired = serializers.SerializerMethodField()
+    assigned_by = serializers.SerializerMethodField()
+    assigned_by_name = serializers.SerializerMethodField()
+    assigned_at = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EventMembership
+        fields = [
+            'id', 'user', 'user_id', 'event', 'event_name', 'role', 'permissions',
+            'invited_by', 'invited_by_name', 'invited_at', 'assigned_by',
+            'assigned_by_name', 'assigned_at', 'expires_at', 'is_active',
+            'is_expired', 'created_at', 'updated_at', 'username', 'email'
+        ]
+        read_only_fields = [
+            'id', 'invited_at', 'assigned_by', 'assigned_by_name', 'assigned_at',
+            'is_expired', 'created_at', 'updated_at', 'username', 'email'
+        ]
+
+    def get_is_expired(self, obj):
+        return obj.is_expired()
+
+    def get_assigned_by(self, obj):
+        return obj.invited_by_id if obj.invited_by_id else None
+
+    def get_assigned_by_name(self, obj):
+        if not obj.invited_by:
+            return None
+        full_name = f"{obj.invited_by.first_name} {obj.invited_by.last_name}".strip()
+        return full_name if full_name else obj.invited_by.username
+
+    def get_assigned_at(self, obj):
+        timestamp = obj.invited_at or getattr(obj, 'created_at', None)
+        return timestamp.isoformat() if timestamp else None
+
+    def validate_user_id(self, value):
+        """Validate that the user exists"""
+        try:
+            User.objects.get(id=value)
+            return value
+        except User.DoesNotExist:
+            raise serializers.ValidationError("User does not exist")
+    
+    def validate(self, attrs):
+        """Validate membership constraints"""
+        user_id = attrs.get('user_id')
+        event = attrs.get('event')
+        has_permissions = 'permissions' in attrs
+        permissions = attrs.get('permissions') if has_permissions else None
+
+        if user_id and event:
+            # Check for existing membership
+            if EventMembership.objects.filter(user_id=user_id, event=event).exists():
+                raise serializers.ValidationError("User is already a member of this event")
+        
+        if has_permissions:
+            # Convert legacy list permissions to dict format
+            if isinstance(permissions, list):
+                permission_dict = {perm: True for perm in permissions}
+                attrs['permissions'] = permission_dict
+            elif permissions is None:
+                if self.instance:
+                    # Leave existing permissions unchanged on updates
+                    attrs.pop('permissions', None)
+                else:
+                    attrs['permissions'] = {}
+        elif not self.instance:
+            attrs['permissions'] = {}
+        
+        return attrs
+    
+    def create(self, validated_data):
+        """Create EventMembership with proper user_id handling"""
+        user_id = validated_data.pop('user_id')
+        user = User.objects.get(id=user_id)
+        validated_data['user'] = user
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        """Update EventMembership with proper user_id handling"""
+        if 'user_id' in validated_data:
+            user_id = validated_data.pop('user_id')
+            user = User.objects.get(id=user_id)
+            validated_data['user'] = user
+        return super().update(instance, validated_data)
+
+
+class BatchMembershipSerializer(serializers.ModelSerializer):
+    membership = EventMembershipSerializer(read_only=True)
+    membership_id = serializers.IntegerField(write_only=True)
+    batch_id = serializers.IntegerField(write_only=True, required=False)  # Accept batch_id from UI
+    batch = serializers.PrimaryKeyRelatedField(queryset=Batch.objects.all(), required=False)  # Make batch not required when batch_id is provided
+    batch_number = serializers.CharField(source='batch.batch_number', read_only=True)
+    user_name = serializers.CharField(source='membership.user.username', read_only=True)
+    assigned_by_name = serializers.CharField(source='assigned_by.username', read_only=True)
+    
+    class Meta:
+        model = BatchMembership
+        fields = [
+            'id', 'batch', 'batch_id', 'batch_number', 'membership', 'membership_id',
+            'user_name', 'can_activate', 'can_verify', 'assigned_by',
+            'assigned_by_name', 'is_active', 'created_at'
+        ]
+        read_only_fields = ['id', 'created_at']
+    
+    def validate_membership_id(self, value):
+        """Validate that the membership exists"""
+        try:
+            EventMembership.objects.get(id=value)
+            return value
+        except EventMembership.DoesNotExist:
+            raise serializers.ValidationError("Event membership does not exist")
+    
+    def validate(self, attrs):
+        """Validate batch membership constraints"""
+        membership_id = attrs.get('membership_id')
+        batch = attrs.get('batch')
+        batch_id = attrs.get('batch_id')
+        
+        # Ensure either batch or batch_id is provided
+        if not batch and not batch_id:
+            raise serializers.ValidationError("Either 'batch' or 'batch_id' must be provided")
+        
+        # Get batch object if batch_id is provided
+        if batch_id and not batch:
+            try:
+                batch = Batch.objects.get(id=batch_id)
+            except Batch.DoesNotExist:
+                raise serializers.ValidationError("Batch does not exist")
+        
+        if membership_id and batch:
+            membership = EventMembership.objects.filter(id=membership_id).select_related('event').first()
+            if membership and membership.event_id != batch.event_id:
+                raise serializers.ValidationError("Membership must be for the same event as the batch")
+            # Check for existing batch membership
+            if BatchMembership.objects.filter(membership_id=membership_id, batch=batch).exists():
+                raise serializers.ValidationError("User is already assigned to this batch")
+        
+        return attrs
+    
+    def create(self, validated_data):
+        """Create BatchMembership with proper membership_id and batch_id handling"""
+        membership_id = validated_data.pop('membership_id')
+        membership = EventMembership.objects.get(id=membership_id)
+        validated_data['membership'] = membership
+        
+        # Handle batch_id if provided instead of batch
+        if 'batch_id' in validated_data:
+            from .models import Batch
+            batch_id = validated_data.pop('batch_id')
+            batch = Batch.objects.get(id=batch_id)
+            validated_data['batch'] = batch
+        
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        """Update BatchMembership with proper membership_id and batch_id handling"""
+        if 'membership_id' in validated_data:
+            membership_id = validated_data.pop('membership_id')
+            membership = EventMembership.objects.get(id=membership_id)
+            validated_data['membership'] = membership
+        
+        # Handle batch_id if provided instead of batch
+        if 'batch_id' in validated_data:
+            from .models import Batch
+            batch_id = validated_data.pop('batch_id')
+            batch = Batch.objects.get(id=batch_id)
+            validated_data['batch'] = batch
+            
+        return super().update(instance, validated_data)
