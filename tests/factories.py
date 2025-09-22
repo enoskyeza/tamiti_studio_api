@@ -1,5 +1,6 @@
 # tests/factories.py
 from django.utils import timezone
+from datetime import timezone as dt_timezone
 
 import factory
 
@@ -19,14 +20,18 @@ from chatrooms.models import (
     Channel, ChannelMessage, ChannelMember,
     DirectThread, DirectMessage
 )
+from ticketing.models import (
+    Event, EventMembership, BatchMembership, TicketType, Batch, Ticket, ScanLog
+)
 
 
 class UserFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = User
+        skip_postgeneration_save = True
 
     username = factory.Sequence(lambda n: f"user{n}")
-    email = factory.LazyAttribute(lambda obj: f"{obj.username}@example.com")
+    email = factory.Sequence(lambda n: f"user{n}@example.com")
     password = factory.PostGenerationMethodCall('set_password', 'testpass123')
     is_verified = True
 
@@ -318,3 +323,92 @@ class SocialPlatformProfileFactory(DjangoModelFactory):
     platform = "facebook"
     followers = 1000
     posts_made = 20
+
+
+# Ticketing Factories
+class EventFactory(DjangoModelFactory):
+    class Meta:
+        model = Event
+
+    name = factory.Sequence(lambda n: f"Event {n}")
+    description = factory.Faker("paragraph")
+    date = factory.Faker("future_datetime", tzinfo=dt_timezone.utc)
+    venue = factory.Faker("city")
+    status = "active"
+    created_by = factory.SubFactory(UserFactory)
+
+
+class EventMembershipFactory(DjangoModelFactory):
+    class Meta:
+        model = EventMembership
+
+    event = factory.SubFactory(EventFactory)
+    user = factory.SubFactory(UserFactory)
+    role = "manager"
+    permissions = {
+        "activate_tickets": True,
+        "verify_tickets": True,
+        "create_batches": False,
+        "void_batches": False
+    }
+    invited_by = factory.SubFactory(UserFactory)
+    is_active = True
+
+
+class TicketTypeFactory(DjangoModelFactory):
+    class Meta:
+        model = TicketType
+
+    event = factory.SubFactory(EventFactory)
+    name = factory.Sequence(lambda n: f"Ticket Type {n}")
+    description = factory.Faker("sentence")
+    price = factory.Faker("pydecimal", left_digits=3, right_digits=2, positive=True)
+    is_active = True
+
+
+class BatchFactory(DjangoModelFactory):
+    class Meta:
+        model = Batch
+
+    event = factory.SubFactory(EventFactory)
+    batch_number = factory.Sequence(lambda n: f"B{n:03d}")
+    quantity = 100
+    status = "active"
+    created_by = factory.SubFactory(UserFactory)
+
+
+class BatchMembershipFactory(DjangoModelFactory):
+    class Meta:
+        model = BatchMembership
+
+    batch = factory.SubFactory(BatchFactory)
+    membership = factory.SubFactory(EventMembershipFactory)
+    can_activate = True
+    can_verify = True
+    is_active = True
+    assigned_by = factory.SubFactory(UserFactory)
+
+
+class TicketFactory(DjangoModelFactory):
+    class Meta:
+        model = Ticket
+
+    batch = factory.SubFactory(BatchFactory)
+    ticket_type = factory.SubFactory(TicketTypeFactory)
+    short_code = factory.Sequence(lambda n: f"T{n:06d}")
+    qr_code = factory.LazyAttribute(lambda obj: f"qr_{obj.short_code}")
+    status = "unused"
+
+
+class ScanLogFactory(DjangoModelFactory):
+    class Meta:
+        model = ScanLog
+
+    ticket = factory.SubFactory(TicketFactory)
+    qr_code = factory.LazyAttribute(lambda obj: obj.ticket.qr_code if obj.ticket else "test_qr")
+    scan_type = "activate"
+    result = "success"
+    user = factory.SubFactory(UserFactory)
+    gate = "Main Gate"
+    ip_address = "127.0.0.1"
+    user_agent = "Test Agent"

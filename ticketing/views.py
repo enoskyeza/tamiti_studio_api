@@ -7,20 +7,21 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
-from django.http import Http404
+from django.http import Http404, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 import logging
+import json
 
 from .models import (
-    Event, EventManager, BatchManager,
+    Event, EventMembership, BatchMembership,
     TicketType, Batch, Ticket, ScanLog, BatchExport, TemporaryUser,
 )
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 from .serializers import (
-    EventSerializer, EventManagerSerializer, EventManagerCreateSerializer,
-    BatchManagerSerializer, BatchManagerCreateSerializer,
-    TicketTypeSerializer, BatchSerializer, BatchCreateSerializer,
+    EventSerializer, TicketTypeSerializer, BatchSerializer, BatchCreateSerializer,
     TicketSerializer, TicketActivateSerializer, TicketVerifySerializer,
     ScanResultSerializer, ScanLogSerializer, BatchExportSerializer,
     BatchStatsSerializer, EventStatsSerializer, TemporaryUserSerializer,
@@ -57,26 +58,14 @@ class EventViewSet(viewsets.ModelViewSet):
             from django.db.models import Q
             queryset = queryset.filter(
                 Q(created_by=self.request.user) |
-                Q(managers__user=self.request.user, managers__is_active=True)
+                Q(memberships__user=self.request.user, memberships__is_active=True)
             ).distinct()
         
         return queryset.order_by('-created_at')
     
     def perform_create(self, serializer):
-        # Check if user has permission to create batches for this event
-        event = serializer.validated_data.get('event')
-        if event and not self.request.user.is_staff:
-            # Check if user is event owner or has create_batches permission
-            if (event.created_by != self.request.user and 
-                not EventManager.objects.filter(
-                    event=event, 
-                    user=self.request.user, 
-                    is_active=True,
-                    permissions__contains=['create_batches']
-                ).exists()):
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied("You don't have permission to create batches for this event")
-        
+        # SECURITY FIX: Replace dead code with intended rule - any authenticated user may create an event
+        # The EventSerializer doesn't supply an event field, so the previous code was unreachable
         serializer.save(created_by=self.request.user)
     
     @action(detail=True, methods=['get'])
@@ -106,7 +95,7 @@ class EventViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get', 'post'])
     def managers(self, request, pk=None):
-        """Get or add event managers"""
+        """Get or add event managers using new EventMembership system"""
         event = self.get_object()
         
         # Check if user is event owner or has permission
@@ -117,141 +106,38 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         
         if request.method == 'GET':
-            managers = EventManager.objects.filter(event=event, is_active=True)
-            serializer = EventManagerSerializer(managers, many=True)
+            memberships = EventMembership.objects.filter(event=event, is_active=True).select_related('user', 'invited_by')
+            serializer = EventMembershipSerializer(memberships, many=True)
             return Response({'results': serializer.data})
         
         elif request.method == 'POST':
-            serializer = EventManagerCreateSerializer(data=request.data)
+            # Use EventMembershipSerializer for creating new memberships
+            serializer = EventMembershipSerializer(data=request.data)
             if serializer.is_valid():
-                email = serializer.validated_data.get('email')
-                user_id = serializer.validated_data.get('user_id')
-                is_temporary = serializer.validated_data.get('is_temporary', False)
-                role = serializer.validated_data['role']
-                permissions = serializer.validated_data.get('permissions', [])
+                # Set the event and invited_by fields
+                serializer.validated_data['event'] = event
+                serializer.validated_data['invited_by'] = request.user
                 
-                print(f"Received data: user_id={user_id}, is_temporary={is_temporary}, role={role}")
+                # Convert permissions list to dict format
+                permissions = serializer.validated_data.get('permissions', {})
+                if isinstance(permissions, list):
+                    permissions_dict = {}
+                    for perm in permissions:
+                        permissions_dict[perm] = True
+                    serializer.validated_data['permissions'] = permissions_dict
                 
-                # Smart user resolution with fallback logic
-                user = None
-                temp_user = None
-                final_is_temporary = is_temporary
-                
-                if user_id and user_id != 'undefined':
-                    # Handle prefixed temporary user IDs
-                    if str(user_id).startswith('temp_'):
-                        temp_id_str = user_id.replace('temp_', '')
-                        if temp_id_str and temp_id_str != 'undefined':
-                            try:
-                                temp_id = int(temp_id_str)
-                                temp_user = TemporaryUser.objects.get(id=temp_id)
-                                final_is_temporary = True
-                            except (ValueError, TemporaryUser.DoesNotExist):
-                                # Fallback: try as regular user ID
-                                try:
-                                    user = User.objects.get(id=temp_id_str)
-                                    final_is_temporary = False
-                                except User.DoesNotExist:
-                                    return Response(
-                                        {'error': f'No user found with ID {temp_id_str}'}, 
-                                        status=status.HTTP_404_NOT_FOUND
-                                    )
-                    else:
-                        # Handle regular user ID or ambiguous ID
-                        try:
-                            numeric_id = int(user_id)
-                            if is_temporary:
-                                # Try temporary user first
-                                try:
-                                    temp_user = TemporaryUser.objects.get(id=numeric_id)
-                                    final_is_temporary = True
-                                except TemporaryUser.DoesNotExist:
-                                    # Fallback to regular user
-                                    try:
-                                        user = User.objects.get(id=numeric_id)
-                                        final_is_temporary = False
-                                    except User.DoesNotExist:
-                                        return Response(
-                                            {'error': f'No user found with ID {numeric_id}'}, 
-                                            status=status.HTTP_404_NOT_FOUND
-                                        )
-                            else:
-                                # Try regular user first
-                                try:
-                                    user = User.objects.get(id=numeric_id)
-                                    final_is_temporary = False
-                                except User.DoesNotExist:
-                                    # Fallback to temporary user
-                                    try:
-                                        temp_user = TemporaryUser.objects.get(id=numeric_id)
-                                        final_is_temporary = True
-                                    except TemporaryUser.DoesNotExist:
-                                        return Response(
-                                            {'error': f'No user found with ID {numeric_id}'}, 
-                                            status=status.HTTP_404_NOT_FOUND
-                                        )
-                        except ValueError:
-                            return Response(
-                                {'error': 'Invalid user_id format'}, 
-                                status=status.HTTP_400_BAD_REQUEST
-                            )
-                
-                elif email:
-                    # Email lookup (only for regular users)
-                    try:
-                        user = User.objects.get(email=email)
-                        final_is_temporary = False
-                    except User.DoesNotExist:
-                        return Response(
-                            {'error': 'User with this email does not exist'}, 
-                            status=status.HTTP_404_NOT_FOUND
-                        )
-                
-                # Check for existing manager
-                existing_manager = None
-                if final_is_temporary and temp_user:
-                    existing_manager = EventManager.objects.filter(
-                        event=event, temp_user=temp_user, is_temporary=True
-                    ).first()
-                elif not final_is_temporary and user:
-                    existing_manager = EventManager.objects.filter(
-                        event=event, user=user, is_temporary=False
-                    ).first()
-                
-                if existing_manager:
-                    return Response(
-                        {'error': 'User is already a manager for this event'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Validate that we have a user before creating
-                if not user and not temp_user:
-                    return Response(
-                        {'error': 'No valid user found to assign as manager'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                print(f"Creating EventManager with: user={user}, temp_user={temp_user}, is_temporary={final_is_temporary}")
-                
-                # Create event manager
-                event_manager = EventManager.objects.create(
-                    event=event,
-                    user=user if not final_is_temporary else None,
-                    temp_user=temp_user if final_is_temporary else None,
-                    is_temporary=final_is_temporary,
-                    role=role,
-                    permissions=permissions,
-                    assigned_by=request.user
-                )
-                
-                response_serializer = EventManagerSerializer(event_manager)
-                return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-            
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                membership = serializer.save()
+                return Response({
+                    'success': True,
+                    'membership': EventMembershipSerializer(membership).data,
+                    'message': 'Event manager added successfully'
+                })
+            else:
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['delete'], url_path='managers/(?P<manager_id>[^/.]+)')
     def remove_manager(self, request, pk=None, manager_id=None):
-        """Remove an event manager"""
+        """Remove an event manager using EventMembership"""
         event = self.get_object()
         
         # Check if user is event owner or has permission
@@ -262,25 +148,25 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         
         try:
-            manager = EventManager.objects.get(
+            membership = EventMembership.objects.get(
                 id=manager_id, 
                 event=event, 
                 is_active=True
             )
             
             # Prevent removing the owner
-            if manager.role == 'owner':
+            if membership.role == 'owner':
                 return Response(
                     {'error': 'Cannot remove event owner'}, 
                     status=status.HTTP_400_BAD_REQUEST
                 )
             
-            manager.is_active = False
-            manager.save()
+            membership.is_active = False
+            membership.save()
             
             return Response({'message': 'Manager removed successfully'})
             
-        except EventManager.DoesNotExist:
+        except EventMembership.DoesNotExist:
             return Response(
                 {'error': 'Manager not found'}, 
                 status=status.HTTP_404_NOT_FOUND
@@ -288,12 +174,12 @@ class EventViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['get', 'post'], url_path='batch-managers')
     def batch_managers(self, request, pk=None):
-        """Get or add batch managers"""
+        """Get or add batch managers using new BatchMembership system"""
         event = self.get_object()
         
         # Check if user is event owner or owner manager
         is_owner = request.user == event.created_by
-        is_owner_manager = EventManager.objects.filter(
+        is_owner_manager = EventMembership.objects.filter(
             event=event, 
             user=request.user, 
             role='owner', 
@@ -307,71 +193,35 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         
         if request.method == 'GET':
-            batch_managers = BatchManager.objects.filter(
+            batch_memberships = BatchMembership.objects.filter(
                 batch__event=event
-            ).select_related('batch', 'manager__user', 'assigned_by')
-            serializer = BatchManagerSerializer(batch_managers, many=True)
+            ).select_related('batch', 'membership__user', 'assigned_by')
+            serializer = BatchMembershipSerializer(batch_memberships, many=True)
             return Response({'results': serializer.data})
         
         elif request.method == 'POST':
-            serializer = BatchManagerCreateSerializer(data=request.data)
+            serializer = BatchMembershipSerializer(data=request.data)
             if serializer.is_valid():
-                batch_id = serializer.validated_data['batch_id']
-                manager_id = serializer.validated_data['manager_id']
-                can_activate = serializer.validated_data['can_activate']
-                can_verify = serializer.validated_data['can_verify']
+                # Set the assigned_by field
+                serializer.validated_data['assigned_by'] = request.user
                 
-                # Verify batch belongs to this event
-                try:
-                    batch = Batch.objects.get(id=batch_id, event=event)
-                except Batch.DoesNotExist:
-                    return Response(
-                        {'error': 'Batch not found for this event'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Verify manager exists and is active for this event
-                try:
-                    manager = EventManager.objects.get(
-                        id=manager_id, 
-                        event=event, 
-                        is_active=True
-                    )
-                except EventManager.DoesNotExist:
-                    return Response(
-                        {'error': 'Manager not found for this event'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Check if batch manager already exists
-                if BatchManager.objects.filter(batch=batch, manager=manager).exists():
-                    return Response(
-                        {'error': 'Manager is already assigned to this batch'}, 
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-                
-                # Create batch manager
-                batch_manager = BatchManager.objects.create(
-                    batch=batch,
-                    manager=manager,
-                    can_activate=can_activate,
-                    can_verify=can_verify,
-                    assigned_by=request.user
-                )
-                
-                response_serializer = BatchManagerSerializer(batch_manager)
-                return Response(response_serializer.data, status=status.HTTP_201_CREATED)
-            
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                batch_membership = serializer.save()
+                return Response({
+                    'success': True,
+                    'batch_membership': BatchMembershipSerializer(batch_membership).data,
+                    'message': 'Batch manager assigned successfully'
+                })
+            else:
+                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['patch', 'delete'], url_path='batch-managers/(?P<batch_manager_id>[^/.]+)')
     def manage_batch_manager(self, request, pk=None, batch_manager_id=None):
-        """Update or remove a batch manager"""
+        """Update or remove a batch manager using BatchMembership"""
         event = self.get_object()
         
         # Check if user is event owner or owner manager
         is_owner = request.user == event.created_by
-        is_owner_manager = EventManager.objects.filter(
+        is_owner_manager = EventMembership.objects.filter(
             event=event, 
             user=request.user, 
             role='owner', 
@@ -385,31 +235,31 @@ class EventViewSet(viewsets.ModelViewSet):
             )
         
         try:
-            batch_manager = BatchManager.objects.get(
+            batch_membership = BatchMembership.objects.get(
                 id=batch_manager_id,
                 batch__event=event
             )
-        except BatchManager.DoesNotExist:
+        except BatchMembership.DoesNotExist:
             return Response(
                 {'error': 'Batch manager not found'}, 
                 status=status.HTTP_404_NOT_FOUND
             )
         
         if request.method == 'PATCH':
-            # Update batch manager permissions
-            can_activate = request.data.get('can_activate', batch_manager.can_activate)
-            can_verify = request.data.get('can_verify', batch_manager.can_verify)
+            # Update batch membership permissions
+            can_activate = request.data.get('can_activate', batch_membership.can_activate)
+            can_verify = request.data.get('can_verify', batch_membership.can_verify)
             
-            batch_manager.can_activate = can_activate
-            batch_manager.can_verify = can_verify
-            batch_manager.save()
+            batch_membership.can_activate = can_activate
+            batch_membership.can_verify = can_verify
+            batch_membership.save()
             
-            serializer = BatchManagerSerializer(batch_manager)
+            serializer = BatchMembershipSerializer(batch_membership)
             return Response(serializer.data)
         
         elif request.method == 'DELETE':
-            # Remove batch manager
-            batch_manager.delete()
+            # Remove batch membership
+            batch_membership.delete()
             return Response({'message': 'Batch manager removed successfully'})
 
 
@@ -456,8 +306,8 @@ class BatchViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(
                 Q(created_by=self.request.user) |
                 Q(event__created_by=self.request.user) |
-                Q(event__managers__user=self.request.user, event__managers__is_active=True) |
-                Q(batch_managers__manager=self.request.user, batch_managers__is_active=True)
+                Q(event__memberships__user=self.request.user, event__memberships__is_active=True) |
+                Q(batch_memberships__membership__user=self.request.user, batch_memberships__is_active=True)
             ).distinct()
         
         return queryset.order_by('-created_at')
@@ -472,11 +322,11 @@ class BatchViewSet(viewsets.ModelViewSet):
         if event and not request.user.is_staff:
             # Check if user is event owner or has create_batches permission
             if (event.created_by != request.user and 
-                not EventManager.objects.filter(
+                not EventMembership.objects.filter(
                     event=event, 
                     user=request.user, 
                     is_active=True,
-                    permissions__contains=['create_batches']
+                    permissions__create_batches=True
                 ).exists()):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied("You don't have permission to create batches for this event")
@@ -498,30 +348,37 @@ class BatchViewSet(viewsets.ModelViewSet):
         if batch.event.created_by == user:
             return True
         
-        # Check if user is event manager with appropriate permissions
-        event_manager = EventManager.objects.filter(
+        # Check if user is event member with appropriate permissions
+        event_membership = EventMembership.objects.filter(
             event=batch.event,
             user=user,
             is_active=True
         ).first()
         
-        if event_manager and required_permission:
-            return required_permission in event_manager.permissions
-        elif event_manager:
+        permission_key_map = {
+            'can_activate': 'activate_tickets',
+            'can_verify': 'verify_tickets',
+            'void_batches': 'void_batches',
+            'create_batches': 'create_batches',
+        }
+        if event_membership and required_permission:
+            lookup_key = permission_key_map.get(required_permission, required_permission)
+            return event_membership.permissions.get(lookup_key, False)
+        elif event_membership:
             return True
         
-        # Check if user is batch manager with appropriate permissions
-        batch_manager = BatchManager.objects.filter(
+        # Check if user is batch member with appropriate permissions
+        batch_membership = BatchMembership.objects.filter(
             batch=batch,
-            manager=user,
+            membership__user=user,
             is_active=True
         ).first()
         
-        if batch_manager:
+        if batch_membership:
             if required_permission == 'can_activate':
-                return batch_manager.can_activate
+                return batch_membership.can_activate
             elif required_permission == 'can_verify':
-                return batch_manager.can_verify
+                return batch_membership.can_verify
             else:
                 return True  # Basic access
         
@@ -532,8 +389,8 @@ class BatchViewSet(viewsets.ModelViewSet):
         """Void a batch and all its tickets"""
         batch = self.get_object()
         
-        # Check permissions
-        if not self.check_batch_permission(batch, request.user, 'manage_batches'):
+        # Check permissions - SECURITY FIX: Use correct permission key
+        if not self.check_batch_permission(batch, request.user, 'void_batches'):
             from rest_framework.exceptions import PermissionDenied
             raise PermissionDenied("You don't have permission to void this batch")
         
@@ -645,30 +502,37 @@ class TicketViewSet(viewsets.ModelViewSet):
         if batch.event.created_by == user:
             return True
         
-        # Check if user is event manager with appropriate permissions
-        event_manager = EventManager.objects.filter(
+        # Check if user is event member with appropriate permissions
+        event_membership = EventMembership.objects.filter(
             event=batch.event,
             user=user,
             is_active=True
         ).first()
         
-        if event_manager and required_permission:
-            return required_permission in event_manager.permissions
-        elif event_manager:
+        permission_key_map = {
+            'can_activate': 'activate_tickets',
+            'can_verify': 'verify_tickets',
+            'void_batches': 'void_batches',
+            'create_batches': 'create_batches',
+        }
+        if event_membership and required_permission:
+            lookup_key = permission_key_map.get(required_permission, required_permission)
+            return event_membership.permissions.get(lookup_key, False)
+        elif event_membership:
             return True
         
-        # Check if user is batch manager with appropriate permissions
-        batch_manager = BatchManager.objects.filter(
+        # Check if user is batch member with appropriate permissions
+        batch_membership = BatchMembership.objects.filter(
             batch=batch,
-            manager=user,
+            membership__user=user,
             is_active=True
         ).first()
         
-        if batch_manager:
+        if batch_membership:
             if required_permission == 'can_activate':
-                return batch_manager.can_activate
+                return batch_membership.can_activate
             elif required_permission == 'can_verify':
-                return batch_manager.can_verify
+                return batch_membership.can_verify
             else:
                 return True  # Basic access
         
@@ -689,11 +553,23 @@ class TicketViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
+        # SECURITY FIX: Filter by permissions (non-admin users see only tickets for events they own/manage or batches they manage)
+        if not self.request.user.is_staff:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(batch__created_by=self.request.user) |
+                Q(batch__event__created_by=self.request.user) |
+                Q(batch__event__memberships__user=self.request.user, batch__event__memberships__is_active=True) |
+                Q(batch__batch_memberships__membership__user=self.request.user, batch__batch_memberships__is_active=True)
+            ).distinct()
+        
         return queryset.order_by('short_code')
     
     @action(detail=False, methods=['post'])
     def activate(self, request):
         """Activate a ticket by QR code"""
+        from rest_framework.exceptions import PermissionDenied
+        
         serializer = TicketActivateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -727,7 +603,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             
             # Check if user has permission to activate tickets for this batch
             if not self._check_batch_permission(ticket.batch, request.user, 'can_activate'):
-                scan_log.result = 'error'
+                scan_log.result = 'permission_denied'
                 scan_log.error_message = 'No permission to activate tickets for this batch'
                 scan_log.save()
                 
@@ -783,21 +659,25 @@ class TicketViewSet(viewsets.ModelViewSet):
                 'error_type': 'not_found'
             }, status=status.HTTP_404_NOT_FOUND)
         
+        except PermissionDenied:
+            # Re-raise PermissionDenied to be handled by DRF
+            raise
         except Exception as e:
             scan_log.result = 'error'
             scan_log.error_message = str(e)
             scan_log.save()
             
-            logger.error(f"Ticket activation error: {e}")
+            logger.error(f"Ticket verification error: {e}")
             return Response({
                 'success': False,
-                'error': 'System error during activation. Please try again.',
+                'error': 'System error during verification. Please try again.',
                 'error_type': 'system_error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['post'])
     def verify(self, request):
         """Verify/scan a ticket for entry"""
+        from rest_framework.exceptions import PermissionDenied
         serializer = TicketVerifySerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -832,7 +712,7 @@ class TicketViewSet(viewsets.ModelViewSet):
             
             # Check if user has permission to verify tickets for this batch
             if not self._check_batch_permission(ticket.batch, request.user, 'can_verify'):
-                scan_log.result = 'error'
+                scan_log.result = 'permission_denied'
                 scan_log.error_message = 'No permission to verify tickets for this batch'
                 scan_log.save()
                 
@@ -913,6 +793,9 @@ class TicketViewSet(viewsets.ModelViewSet):
                 'error': 'Invalid or unactivated ticket'
             })
         
+        except PermissionDenied:
+            # Re-raise PermissionDenied to be handled by DRF
+            raise
         except Exception as e:
             scan_log.result = 'error'
             scan_log.error_message = str(e)
@@ -1062,67 +945,118 @@ class TicketingUsersViewSet(viewsets.ViewSet):
         """Get combined list of users and temporary users for this app"""
         users_data = []
         
-        # Get regular users based on permissions
-        if request.user.is_staff:
-            # Staff can see all active users
-            users = User.objects.filter(is_active=True)
-        else:
-            # Non-staff can only see themselves
-            users = User.objects.filter(id=request.user.id, is_active=True)
-        
-        # Add search functionality for users
+        # Get filtering parameters
         search = request.query_params.get('search')
-        if search:
-            users = users.filter(
-                Q(username__icontains=search) |
-                Q(email__icontains=search) |
-                Q(first_name__icontains=search) |
-                Q(last_name__icontains=search)
-            )
+        is_temporary = request.query_params.get('is_temporary')
+        created_for_event = request.query_params.get('created_for_event')
         
-        # Serialize regular users
-        for user in users.order_by('username'):
-            name = f"{user.first_name} {user.last_name}".strip() if user.first_name and user.last_name else user.username
-            users_data.append({
-                'id': user.id,
-                'username': user.username,
-                'email': user.email,
-                'first_name': user.first_name,
-                'last_name': user.last_name,
-                'name': name,
-                'type': 'regular'
-            })
+        # If filtering for temporary users only, skip regular users
+        if is_temporary and is_temporary.lower() == 'true':
+            pass  # Skip regular users section
+        else:
+            # Get regular users based on permissions
+            if request.user.is_staff:
+                # Staff can see all active users
+                users = User.objects.filter(is_active=True, is_temporary=False)
+            else:
+                # Non-staff can only see themselves
+                users = User.objects.filter(id=request.user.id, is_active=True, is_temporary=False)
+            
+            # Add search functionality for users
+            if search:
+                users = users.filter(
+                    Q(username__icontains=search) |
+                    Q(email__icontains=search) |
+                    Q(first_name__icontains=search) |
+                    Q(last_name__icontains=search)
+                )
         
-        # Get temporary users (event managers can see temp users for their events)
-        temp_users = TemporaryUser.objects.filter(is_active=True)
+            # Serialize regular users
+            for user in users.order_by('username'):
+                name = f"{user.first_name} {user.last_name}".strip() if user.first_name and user.last_name else user.username
+                users_data.append({
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'name': name,
+                    'type': 'regular',
+                    'is_active': user.is_active,
+                })
         
+        # Get temporary users (now unified in User model)
+        temp_users = User.objects.filter(is_temporary=True)
+
+        # Filter by event if specified
+        if created_for_event:
+            temp_users = temp_users.filter(created_for_event_id=created_for_event)
+
         # Filter temporary users based on permissions
         if not request.user.is_staff:
             # Non-staff can only see temp users for events they manage
             managed_events = Event.objects.filter(
                 Q(created_by=request.user) |
-                Q(managers__user=request.user, managers__is_active=True)
+                Q(memberships__user=request.user, memberships__is_active=True)
             ).distinct()
-            temp_users = temp_users.filter(event__in=managed_events)
-        
+            temp_users = temp_users.filter(created_for_event__in=managed_events)
+
         # Add search functionality for temporary users
         if search:
             temp_users = temp_users.filter(
                 Q(username__icontains=search)
             )
-        
+
+        temp_users = temp_users.select_related('created_for_event')
+
+        # Preload memberships for permissions/role information
+        membership_lookup = {}
+        temp_user_ids = list(temp_users.values_list('id', flat=True))
+        if temp_user_ids:
+            memberships = EventMembership.objects.filter(
+                user_id__in=temp_user_ids
+            ).select_related('event', 'user')
+            for membership in memberships:
+                key = (membership.user_id, membership.event_id)
+                # Prefer active membership for created_for_event
+                if key not in membership_lookup or membership.is_active:
+                    membership_lookup[key] = membership
+
         # Serialize temporary users
         for temp_user in temp_users.order_by('username'):
+            event = temp_user.created_for_event
+            membership = None
+            if event:
+                membership = membership_lookup.get((temp_user.id, event.id))
+
+            permissions = membership.permissions if membership else {}
+            can_activate = permissions.get('activate_tickets', False)
+            can_verify = permissions.get('verify_tickets', False)
+            can_scan = permissions.get('scan_tickets', False) or permissions.get('verify_tickets', False)
+            full_name = f"{temp_user.first_name} {temp_user.last_name}".strip()
+
             users_data.append({
-                'id': f"temp_{temp_user.id}",
+                'id': temp_user.id,
                 'username': temp_user.username,
-                'email': f"{temp_user.username}@temp.local",
-                'name': temp_user.username,
+                'email': temp_user.email,
+                'name': full_name or temp_user.username,
+                'event_id': event.id if event else None,
+                'event_name': event.name if event else 'N/A',
+                'role': membership.role if membership else temp_user.role,
                 'type': 'temporary',
-                'event_id': temp_user.event.id,
-                'event_name': temp_user.event.name
+                'is_active': temp_user.is_active,
+                'is_expired': temp_user.is_expired(),
+                'expires_at': temp_user.expires_at,
+                'last_login': temp_user.last_login,
+                'login_count': getattr(temp_user, 'login_count', None),
+                'permissions': permissions,
+                'can_activate': can_activate,
+                'can_verify': can_verify,
+                'can_scan': can_scan,
+                'membership_id': membership.id if membership else None,
+                'membership_role': membership.role if membership else None,
             })
-        
+
         return Response({'results': users_data})
 
 
@@ -1165,29 +1099,31 @@ class DashboardViewSet(viewsets.ViewSet):
 
 
 class TemporaryUserViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing temporary users"""
+    """DEPRECATED: ViewSet for managing temporary users - use unified User model instead"""
     queryset = TemporaryUser.objects.all()
     serializer_class = TemporaryUserSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['event', 'role', 'is_active']
     search_fields = ['username']
-    ordering_fields = ['created_at', 'expires_at', 'username']
+    ordering_fields = ['username', 'created_at', 'expires_at']
     ordering = ['-created_at']
     
     def get_queryset(self):
+        """Filter temporary users based on user permissions"""
         queryset = super().get_queryset()
         
-        # Filter by permissions (non-admin users see only temp users for events they own/manage)
-        if not self.request.user.is_staff:
-            from django.db.models import Q
-            queryset = queryset.filter(
-                Q(created_by=self.request.user) |
-                Q(event__created_by=self.request.user) |
-                Q(event__managers__user=self.request.user, event__managers__is_active=True)
-            ).distinct()
+        # Staff can see all temporary users
+        if self.request.user.is_staff:
+            return queryset
         
-        return queryset
+        # Non-staff can only see temporary users for events they manage
+        managed_events = Event.objects.filter(
+            Q(created_by=self.request.user) |
+            Q(memberships__user=self.request.user, memberships__is_active=True)
+        ).distinct()
+        
+        return queryset.filter(event__in=managed_events)
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -1195,6 +1131,18 @@ class TemporaryUserViewSet(viewsets.ModelViewSet):
         return TemporaryUserSerializer
     
     def perform_create(self, serializer):
+        # SECURITY FIX: Check event-level authorization
+        event = serializer.validated_data.get('event')
+        if not event:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError("Event is required")
+        
+        # Only event owner or staff can Create temporary Users
+        from .viewsets import can_manage_event
+        if not can_manage_event(self.request.user, event):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied("Only event owners can Create temporary Users")
+        
         serializer.save(created_by=self.request.user)
     
     @action(detail=True, methods=['post'])
@@ -1229,60 +1177,38 @@ class TemporaryUserViewSet(viewsets.ModelViewSet):
         })
 
 
-@action(detail=False, methods=['post'], permission_classes=[])
-def temp_user_login(request):
-    """Login endpoint for temporary users"""
-    serializer = TemporaryUserLoginSerializer(data=request.data)
-    if not serializer.is_valid():
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+# Temporary user login endpoint removed - all users now use standard JWT authentication
+
+
+class TemporaryUserCreateViewSet(viewsets.ModelViewSet):
+    """ViewSet for creating temporary users with proper permission handling"""
+    serializer_class = TemporaryUserCreateSerializer
+    permission_classes = [IsAuthenticated]
+    http_method_names = ['post']  # Only allow creation
     
-    username = serializer.validated_data['username']
-    password = serializer.validated_data['password']
-    event_id = serializer.validated_data.get('event_id')
+    def get_queryset(self):
+        # This ViewSet is only for creation, no listing
+        return User.objects.none()
     
-    try:
-        # Find temporary user
-        temp_user_query = TemporaryUser.objects.filter(username=username, is_active=True)
-        if event_id:
-            temp_user_query = temp_user_query.filter(event_id=event_id)
+    def get_serializer_class(self):
+        return TemporaryUserCreateSerializer
+    
+    def perform_create(self, serializer):
+        # Permission checking is handled in the serializer
+        # The serializer creates both User and EventMembership
+        user = serializer.save()
         
-        temp_user = temp_user_query.first()
+        # Add generated password to response if available
+        if hasattr(user, '_generated_password') and user._generated_password:
+            self.generated_password = user._generated_password
+    
+    def create(self, request, *args, **kwargs):
+        """Override create to include generated password in response"""
+        response = super().create(request, *args, **kwargs)
         
-        if not temp_user:
-            return Response({
-                'success': False,
-                'error': 'Invalid credentials'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-        
-        if temp_user.is_expired():
-            return Response({
-                'success': False,
-                'error': 'Account has expired'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-        
-        if not temp_user.check_password(password):
-            return Response({
-                'success': False,
-                'error': 'Invalid credentials'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-        
-        # Record login
-        temp_user.record_login()
-        
-        # Create a simple session token (in production, use JWT or similar)
-        from django.contrib.auth.tokens import default_token_generator
-        token = default_token_generator.make_token(temp_user)
-        
-        return Response({
-            'success': True,
-            'user': TemporaryUserSerializer(temp_user).data,
-            'token': token,
-            'message': 'Login successful'
-        })
-        
-    except Exception as e:
-        logger.error(f"Temporary user login error: {str(e)}")
-        return Response({
-            'success': False,
-            'error': 'Login failed'
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        # Add generated password to response if available
+        if hasattr(self, 'generated_password'):
+            response.data['generated_password'] = self.generated_password
+            
+        return response
+# Temporary users are now regular User objects with is_temporary=True

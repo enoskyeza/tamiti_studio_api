@@ -32,6 +32,10 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
+# Cross-origin cookie settings for production (tamiti.com -> app.pythonanywhere.com)
+SESSION_COOKIE_SAMESITE = 'None'  # Allow cross-origin cookies in production
+CSRF_COOKIE_SAMESITE = 'None'
+
 # Make cookies available to subdomains (so frontend middleware can read refresh_cookie)
 # Set these via environment if domain differs
 SESSION_COOKIE_DOMAIN = config("SESSION_COOKIE_DOMAIN", default=None)

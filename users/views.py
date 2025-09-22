@@ -1,13 +1,16 @@
 # users/views.py
 from rest_framework import generics, status
-from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken, TokenError
+from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
-from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
+from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework import serializers as drf_serializers
-import logging
+from django.contrib.auth import authenticate
 from django.utils import timezone
+import logging
+from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from config.settings import base
 from django.conf import settings
@@ -21,6 +24,33 @@ from django.contrib.auth import authenticate
 
 logger = logging.getLogger(__name__)
 
+
+class TokenRefreshThrottle(AnonRateThrottle):
+    """Custom throttle for token refresh to prevent infinite loops"""
+    scope = 'token_refresh'
+    rate = '10/min'  # Allow max 10 refresh attempts per minute per IP
+
+
+class LogoutView(APIView):
+    permission_classes = [AllowAny]  # Allow unauthenticated logout
+    
+    def post(self, request):
+        try:
+            # Clear the refresh token cookie regardless of authentication status
+            response = Response({
+                'success': True,
+                'message': 'Successfully logged out'
+            }, status=status.HTTP_200_OK)
+            
+            return clear_refresh_cookie(response)
+            
+        except Exception as e:
+            logger.error(f"Logout error: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Logout failed'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 def get_tokens_for_user(user):
     refresh = RefreshToken.for_user(user)
     return {
@@ -29,12 +59,34 @@ def get_tokens_for_user(user):
     }
 
 
+def get_refresh_cookie_kwargs():
+    return {
+        'httponly': True,
+        'secure': getattr(settings, 'REFRESH_COOKIE_SECURE', getattr(settings, 'SESSION_COOKIE_SECURE', not settings.DEBUG)),
+        'samesite': getattr(settings, 'REFRESH_COOKIE_SAMESITE', 'None'),
+        'domain': getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+        'path': '/',
+    }
+
+
+def clear_refresh_cookie(response):
+    response.set_cookie(
+        'refresh_token',
+        '',
+        max_age=0,
+        **get_refresh_cookie_kwargs()
+    )
+    return response
+
+
 class CookieTokenRefreshView(generics.GenericAPIView):
     permission_classes = [AllowAny]
+    throttle_classes = [TokenRefreshThrottle]
     serializer_class = drf_serializers.Serializer
 
     def post(self, request):
         print(f"DEBUG: Token refresh POST method called")
+
         try:
             print(f"DEBUG: Inside try block")
             logger.info(f"🔵 [TOKEN REFRESH] Refresh attempt started", extra={
@@ -48,11 +100,13 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             refresh_token = request.COOKIES.get('refresh_token')
 
             if not refresh_token:
-                logger.warning(f"🔴 [TOKEN REFRESH] No refresh token in cookies", extra={
-                    'timestamp': timezone.now().isoformat(),
-                    'available_cookies': list(request.COOKIES.keys()),
-                })
-                return Response({'error': 'Refresh token not found'}, status=400)
+                # Fast-fail: Don't log repeatedly, just return clear error
+                response = Response({
+                    'error': 'Missing refresh token cookie',
+                    'code': 'MISSING_REFRESH_COOKIE',
+                    'message': 'Authentication required. Please log in again.'
+                }, status=401)  # Use 401 to trigger proper logout
+                return clear_refresh_cookie(response)
 
             logger.info(f"🔵 [TOKEN REFRESH] Validating refresh token", extra={
                 'timestamp': timezone.now().isoformat(),
@@ -102,12 +156,8 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             response.set_cookie(
                 'refresh_token',
                 new_refresh_token,
-                httponly=True,
-                secure=not base.DEBUG,
-                samesite="None" if not base.DEBUG else "Lax",
-                domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
                 max_age=cookie_max_age,
-                path='/'
+                **get_refresh_cookie_kwargs()
             )
             
             logger.info(f"🟢 [TOKEN REFRESH] Response prepared with new tokens", extra={
@@ -125,7 +175,15 @@ class CookieTokenRefreshView(generics.GenericAPIView):
                 'error': str(e),
                 'token_preview': refresh_token[:20] + '...',
             })
-            return Response({'error': 'Invalid or expired refresh token'}, status=400)
+            response = Response(
+                {
+                    'error': 'Invalid or expired refresh token',
+                    'code': 'INVALID_REFRESH_TOKEN',
+                    'message': 'Authentication required. Please log in again.'
+                },
+                status=401
+            )
+            return clear_refresh_cookie(response)
         except Exception as e:
             import traceback
             logger.error(f"🔴 [TOKEN REFRESH] Unexpected error", extra={
@@ -137,7 +195,8 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             # Also print to console for immediate debugging
             print(f"TOKEN REFRESH ERROR: {type(e).__name__}: {str(e)}")
             print(f"TRACEBACK: {traceback.format_exc()}")
-            return Response({'error': 'Token refresh failed'}, status=500)
+            response = Response({'error': 'Token refresh failed'}, status=500)
+            return clear_refresh_cookie(response)
 
 
 class CurrentUserView(generics.GenericAPIView):
@@ -260,19 +319,15 @@ class LoginView(generics.GenericAPIView):
                 'refresh_token',
                 refresh_token,
                 max_age=cookie_max_age,
-                httponly=True,
-                secure=not base.DEBUG,
-                samesite="None" if not base.DEBUG else "Lax",
-                domain=getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
-                path='/'
+                **get_refresh_cookie_kwargs()
             )
             
             logger.info(f"🟢 [AUTH LOGIN] Response prepared with cookie", extra={
                 'timestamp': timezone.now().isoformat(),
                 'user_id': user.id,
                 'cookie_domain': getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
-                'cookie_secure': not base.DEBUG,
-                'cookie_samesite': "None" if not base.DEBUG else "Lax",
+                'cookie_secure': not settings.DEBUG,
+                'cookie_samesite': "None" if not settings.DEBUG else "Lax",
                 'cookie_max_age': cookie_max_age,
             })
 

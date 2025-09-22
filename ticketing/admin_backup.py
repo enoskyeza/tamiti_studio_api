@@ -10,6 +10,8 @@ from .models import (
 
 # ===== Forms and Inlines (top-level to avoid NameError) =====
 
+
+
 class TemporaryUserInline(admin.TabularInline):
     model = TemporaryUser
     extra = 0
@@ -55,6 +57,7 @@ class EventAdmin(admin.ModelAdmin):
     )
     
     inlines = [EventMembershipInline]  # Updated to use new unified membership system
+    # Legacy inlines removed: EventManagerInline, TemporaryUserInline
     
     def save_model(self, request, obj, form, change):
         if not change:
@@ -424,3 +427,276 @@ class BatchMembershipAdmin(admin.ModelAdmin):
         updated = queryset.update(is_active=False)
         self.message_user(request, f"Deactivated {updated} batch membership(s)")
     deactivate_memberships.short_description = "Deactivate selected memberships"
+    
+    class Meta:
+        model = TemporaryUser
+        fields = [
+            'username', 'password', 'confirm_password', 'event', 'role',
+            'is_active', 'expires_at', 'can_activate', 'can_verify', 'can_scan'
+        ]
+    
+    def clean(self):
+        cleaned_data = super().clean()
+        password = cleaned_data.get('password')
+        confirm_password = cleaned_data.get('confirm_password')
+        
+        if password and password != confirm_password:
+            raise forms.ValidationError("Passwords don't match")
+        
+        return cleaned_data
+    
+    def save(self, commit=True):
+        temp_user = super().save(commit=False)
+        password = self.cleaned_data.get('password')
+        
+        if password:
+            temp_user.set_password(password)
+        
+        if commit:
+            temp_user.save()
+        return temp_user
+
+
+@admin.register(TemporaryUser)
+class TemporaryUserAdmin(admin.ModelAdmin):
+    form = TemporaryUserAdminForm
+    list_display = [
+        'username', 'event', 'role', 'is_active', 'expires_at', 
+        'is_expired_display', 'login_count', 'last_login', 'created_by'
+    ]
+    list_filter = ['role', 'is_active', 'event', 'expires_at', 'created_at']
+    search_fields = ['username', 'event__name', 'created_by__username']
+    autocomplete_fields = ['event', 'created_by']
+    readonly_fields = ['created_at', 'updated_at', 'last_login', 'login_count']
+    list_select_related = ['event', 'created_by']
+    
+    actions = [
+        'activate_users', 'deactivate_users', 'extend_expiry', 
+        'enable_all_permissions', 'disable_all_permissions'
+    ]
+    
+    fieldsets = (
+        (None, {
+            'fields': ('username', 'password', 'confirm_password', 'event', 'role', 'is_active')
+        }),
+        ('Permissions', {
+            'fields': ('can_activate', 'can_verify', 'can_scan')
+        }),
+        ('Expiry', {
+            'fields': ('expires_at',)
+        }),
+        ('Statistics', {
+            'fields': ('last_login', 'login_count'),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def is_expired_display(self, obj):
+        if obj.is_expired():
+            return format_html('<span style="color: red;">Expired</span>')
+        return format_html('<span style="color: green;">Active</span>')
+    is_expired_display.short_description = 'Status'
+    
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.created_by_id:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def activate_users(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Activated {updated} temporary user(s)")
+    activate_users.short_description = "Activate selected users"
+    
+    def deactivate_users(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} temporary user(s)")
+    deactivate_users.short_description = "Deactivate selected users"
+    
+    def extend_expiry(self, request, queryset):
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        new_expiry = timezone.now() + timedelta(days=30)
+        updated = queryset.update(expires_at=new_expiry)
+        self.message_user(request, f"Extended expiry for {updated} user(s) by 30 days")
+    extend_expiry.short_description = "Extend expiry by 30 days"
+    
+    def enable_all_permissions(self, request, queryset):
+        updated = queryset.update(can_activate=True, can_verify=True, can_scan=True)
+        self.message_user(request, f"Enabled all permissions for {updated} user(s)")
+    enable_all_permissions.short_description = "Enable all permissions"
+    
+    def disable_all_permissions(self, request, queryset):
+        updated = queryset.update(can_activate=False, can_verify=False, can_scan=False)
+        self.message_user(request, f"Disabled all permissions for {updated} user(s)")
+    disable_all_permissions.short_description = "Disable all permissions"
+
+
+# ============ NEW UNIFIED MEMBERSHIP SYSTEM ADMIN ============
+# (EventMembershipInline moved above EventAdmin class to fix import order)
+
+
+@admin.register(EventMembership)
+class EventMembershipAdmin(admin.ModelAdmin):
+    """Admin interface for the new unified EventMembership model"""
+    list_display = [
+        'event', 'user', 'role', 'permissions_summary', 'is_active', 
+        'expires_at', 'invited_by', 'created_at'
+    ]
+    list_filter = ['role', 'is_active', 'event', 'created_at', 'expires_at']
+    search_fields = ['event__name', 'user__username', 'user__email', 'user__first_name', 'user__last_name']
+    autocomplete_fields = ['event', 'user', 'invited_by']
+    readonly_fields = ['created_at', 'updated_at']
+    list_select_related = ['event', 'user', 'invited_by']
+    
+    actions = ['activate_memberships', 'deactivate_memberships', 'extend_expiry']
+    
+    fieldsets = (
+        (None, {
+            'fields': ('event', 'user', 'role', 'is_active')
+        }),
+        ('Permissions', {
+            'fields': ('permissions',),
+            'description': 'JSON object with permission scopes and values'
+        }),
+        ('Expiry', {
+            'fields': ('expires_at',),
+            'classes': ('collapse',)
+        }),
+        ('Metadata', {
+            'fields': ('invited_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def permissions_summary(self, obj):
+        if not obj.permissions:
+            return '-'
+        perms = obj.permissions
+        if isinstance(perms, dict):
+            active_perms = [k for k, v in perms.items() if v]
+            return ', '.join(active_perms[:3]) + ('...' if len(active_perms) > 3 else '')
+        return str(perms)[:50] + ('...' if len(str(perms)) > 50 else '')
+    permissions_summary.short_description = 'Permissions'
+    
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.invited_by_id:
+            obj.invited_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def activate_memberships(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Activated {updated} membership(s)")
+    activate_memberships.short_description = "Activate selected memberships"
+    
+    def deactivate_memberships(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} membership(s)")
+    deactivate_memberships.short_description = "Deactivate selected memberships"
+    
+    def extend_expiry(self, request, queryset):
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        new_expiry = timezone.now() + timedelta(days=30)
+        updated = queryset.update(expires_at=new_expiry)
+        self.message_user(request, f"Extended expiry for {updated} membership(s) by 30 days")
+    extend_expiry.short_description = "Extend expiry by 30 days"
+
+
+@admin.register(BatchMembership)
+class BatchMembershipAdmin(admin.ModelAdmin):
+    """Admin interface for the new unified BatchMembership model"""
+    list_display = [
+        'batch', 'event_name', 'user_name', 'can_activate', 'can_verify', 
+        'is_active', 'assigned_by', 'created_at'
+    ]
+    list_filter = ['can_activate', 'can_verify', 'is_active', 'batch__event', 'created_at']
+    search_fields = [
+        'batch__batch_number', 'batch__event__name', 
+        'membership__user__username', 'membership__user__email',
+        'membership__user__first_name', 'membership__user__last_name'
+    ]
+    autocomplete_fields = ['batch', 'membership', 'assigned_by']
+    readonly_fields = ['created_at', 'updated_at']
+    list_select_related = ['batch__event', 'membership__user', 'assigned_by']
+    
+    actions = [
+        'enable_activation', 'disable_activation', 
+        'enable_verification', 'disable_verification',
+        'activate_memberships', 'deactivate_memberships'
+    ]
+    
+    fieldsets = (
+        (None, {
+            'fields': ('batch', 'membership', 'is_active')
+        }),
+        ('Permissions', {
+            'fields': ('can_activate', 'can_verify')
+        }),
+        ('Metadata', {
+            'fields': ('assigned_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def event_name(self, obj):
+        return obj.batch.event.name
+    event_name.short_description = 'Event'
+    
+    def user_name(self, obj):
+        user = obj.membership.user
+        return f"{user.get_full_name() or user.username}"
+    user_name.short_description = 'User'
+    
+    def save_model(self, request, obj, form, change):
+        if not change and not obj.assigned_by_id:
+            obj.assigned_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def enable_activation(self, request, queryset):
+        updated = queryset.update(can_activate=True)
+        self.message_user(request, f"Enabled activation for {updated} assignment(s)")
+    enable_activation.short_description = "Enable activation"
+    
+    def disable_activation(self, request, queryset):
+        updated = queryset.update(can_activate=False)
+        self.message_user(request, f"Disabled activation for {updated} assignment(s)")
+    disable_activation.short_description = "Disable activation"
+    
+    def enable_verification(self, request, queryset):
+        updated = queryset.update(can_verify=True)
+        self.message_user(request, f"Enabled verification for {updated} assignment(s)")
+    enable_verification.short_description = "Enable verification"
+    
+    def disable_verification(self, request, queryset):
+        updated = queryset.update(can_verify=False)
+        self.message_user(request, f"Disabled verification for {updated} assignment(s)")
+    disable_verification.short_description = "Disable verification"
+    
+    def activate_memberships(self, request, queryset):
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f"Activated {updated} batch membership(s)")
+    activate_memberships.short_description = "Activate selected memberships"
+    
+    def deactivate_memberships(self, request, queryset):
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f"Deactivated {updated} batch membership(s)")
+    deactivate_memberships.short_description = "Deactivate selected memberships"
+
+
+# ============ LEGACY MODEL ADMIN (DEPRECATED) ============
+
+# Mark legacy admin classes as deprecated by adding warnings
+EventManagerAdmin.list_display_links = None  # Make read-only
+EventManagerAdmin.actions = []  # Remove actions
+
+BatchManagerAdmin.list_display_links = None  # Make read-only  
+BatchManagerAdmin.actions = []  # Remove actions
+
+TemporaryUserAdmin.list_display_links = None  # Make read-only
+TemporaryUserAdmin.actions = []  # Remove actions

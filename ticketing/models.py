@@ -30,132 +30,6 @@ class Event(BaseModel):
         return self.name
 
 
-class EventManager(BaseModel):
-    """Event managers who can manage specific events"""
-    ROLE_CHOICES = [
-        ('owner', 'Event Owner'),
-        ('manager', 'Event Manager'),
-        ('staff', 'Event Staff'),
-    ]
-    
-    PERMISSION_CHOICES = [
-        ('activate_tickets', 'Can Activate Tickets'),
-        ('verify_tickets', 'Can Verify Tickets'),
-        ('create_batches', 'Can Create Batches'),
-        ('void_batches', 'Can Void Batches'),
-        ('export_batches', 'Can Export Batches'),
-        ('manage_staff', 'Can Manage Staff'),
-        ('view_reports', 'Can View Reports'),
-    ]
-    
-    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='managers')
-    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='managed_events', null=True, blank=True)
-    temp_user = models.ForeignKey('TemporaryUser', on_delete=models.CASCADE, related_name='managed_events', null=True, blank=True)
-    is_temporary = models.BooleanField(default=False, help_text="True if this manager is a temporary user")
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
-    permissions = models.JSONField(default=list, help_text="List of permission codes")
-    assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='assigned_managers')
-    is_active = models.BooleanField(default=True)
-    
-    class Meta:
-        ordering = ['role', 'user__username', 'temp_user__username']
-        constraints = [
-            models.CheckConstraint(
-                check=models.Q(user__isnull=False, temp_user__isnull=True) | 
-                      models.Q(user__isnull=True, temp_user__isnull=False),
-                name='exactly_one_user_type'
-            ),
-            models.UniqueConstraint(
-                fields=['event', 'user'],
-                condition=models.Q(user__isnull=False),
-                name='unique_regular_user_per_event'
-            ),
-            models.UniqueConstraint(
-                fields=['event', 'temp_user'],
-                condition=models.Q(temp_user__isnull=False),
-                name='unique_temp_user_per_event_manager'
-            ),
-        ]
-    
-    def clean(self):
-        """Validate that exactly one user type is set"""
-        from django.core.exceptions import ValidationError
-        
-        if not self.user and not self.temp_user:
-            raise ValidationError("Either user or temp_user must be set")
-        
-        if self.user and self.temp_user:
-            raise ValidationError("Cannot set both user and temp_user")
-        
-        # Ensure is_temporary matches the user type
-        if self.temp_user and not self.is_temporary:
-            self.is_temporary = True
-        elif self.user and self.is_temporary:
-            self.is_temporary = False
-    
-    def save(self, *args, **kwargs):
-        self.clean()
-        super().save(*args, **kwargs)
-    
-    def __str__(self):
-        if self.is_temporary and self.temp_user:
-            return f"{self.temp_user.username} - {self.event.name} ({self.get_role_display()}) [TEMP]"
-        elif self.user:
-            return f"{self.user.username} - {self.event.name} ({self.get_role_display()})"
-        return f"EventManager {self.id} - {self.event.name}"
-    
-    @property
-    def manager_user(self):
-        """Get the actual user object (regular or temporary)"""
-        return self.temp_user if self.is_temporary else self.user
-    
-    @property
-    def username(self):
-        """Get username regardless of user type"""
-        manager = self.manager_user
-        return manager.username if manager else None
-    
-    @property
-    def email(self):
-        """Get email regardless of user type"""
-        manager = self.manager_user
-        if hasattr(manager, 'email'):
-            return manager.email
-        return f"{manager.username}@temp.local" if manager else None
-    
-    def has_permission(self, permission_code):
-        """Check if manager has specific permission"""
-        if self.role == 'owner':
-            return True  # Owners have all permissions
-        return permission_code in self.permissions
-    
-    def add_permission(self, permission_code):
-        """Add permission to manager"""
-        if permission_code not in self.permissions:
-            self.permissions.append(permission_code)
-            self.save()
-    
-    def remove_permission(self, permission_code):
-        """Remove permission from manager"""
-        if permission_code in self.permissions:
-            self.permissions.remove(permission_code)
-            self.save()
-
-
-class BatchManager(BaseModel):
-    """Assign managers to specific batches for granular control"""
-    batch = models.ForeignKey('Batch', on_delete=models.CASCADE, related_name='assigned_managers')
-    manager = models.ForeignKey(EventManager, on_delete=models.CASCADE, related_name='batch_assignments')
-    can_activate = models.BooleanField(default=True)
-    can_verify = models.BooleanField(default=True)
-    assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='batch_assignments')
-    
-    class Meta:
-        unique_together = ['batch', 'manager']
-        ordering = ['batch__batch_number', 'manager__user__username']
-    
-    def __str__(self):
-        return f"{self.manager.user.username} -> {self.batch.batch_number}"
 
 
 class TicketType(BaseModel):
@@ -356,6 +230,7 @@ class ScanLog(BaseModel):
         ('error', 'Error'),
         ('duplicate', 'Duplicate'),
         ('invalid', 'Invalid'),
+        ('permission_denied', 'Permission Denied'),
     ]
     
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, null=True, blank=True, related_name='scan_logs')
@@ -463,3 +338,84 @@ class TemporaryUser(BaseModel):
         self.last_login = timezone.now()
         self.login_count += 1
         self.save(update_fields=['last_login', 'login_count'])
+
+
+class EventMembership(BaseModel):
+    """Unified event membership model replacing EventManager dual-user system"""
+    
+    ROLE_CHOICES = [
+        ('owner', 'Event Owner'),
+        ('manager', 'Event Manager'),
+        ('staff', 'Event Staff'),
+    ]
+    
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='event_memberships')
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='memberships')
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='staff')
+    permissions = models.JSONField(default=dict, help_text="Granular permissions for this membership")
+    invited_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='invitations_sent')
+    invited_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True, help_text="When this membership expires (for temporary users)")
+    is_active = models.BooleanField(default=True)
+    
+    class Meta:
+        unique_together = ['user', 'event']
+        ordering = ['role', 'user__username']
+        indexes = [
+            models.Index(fields=['event', 'is_active']),
+            models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['expires_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.username} - {self.event.name} ({self.get_role_display()})"
+    
+    def has_permission(self, permission_code):
+        """Check if membership has specific permission"""
+        if self.role == 'owner':
+            return True  # Owners have all permissions
+        return self.permissions.get(permission_code, False)
+    
+    def add_permission(self, permission_code):
+        """Add permission to membership"""
+        self.permissions[permission_code] = True
+        self.save(update_fields=['permissions'])
+    
+    def remove_permission(self, permission_code):
+        """Remove permission from membership"""
+        self.permissions.pop(permission_code, None)
+        self.save(update_fields=['permissions'])
+    
+    def is_expired(self):
+        """Check if membership has expired"""
+        if not self.expires_at:
+            return False
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+    
+    @property
+    def username(self):
+        """Get username for compatibility"""
+        return self.user.username
+    
+    @property
+    def email(self):
+        """Get email for compatibility"""
+        return self.user.email
+
+
+class BatchMembership(BaseModel):
+    """Assign members to specific batches for granular control"""
+    batch = models.ForeignKey('Batch', on_delete=models.CASCADE, related_name='batch_memberships')
+    membership = models.ForeignKey(EventMembership, on_delete=models.CASCADE, related_name='batch_assignments')
+    can_activate = models.BooleanField(default=True)
+    can_verify = models.BooleanField(default=True)
+    assigned_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='batch_assignments_made')
+    is_active = models.BooleanField(default=True)
+    
+    class Meta:
+        unique_together = ['batch', 'membership']
+        ordering = ['batch__batch_number', 'membership__user__username']
+    
+    def __str__(self):
+        return f"{self.membership.user.username} - {self.batch.batch_number}"

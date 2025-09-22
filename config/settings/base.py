@@ -65,6 +65,10 @@ MIDDLEWARE = [
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOW_CREDENTIALS = True
 
+# Refresh token cookie defaults (can be overridden per environment)
+REFRESH_COOKIE_SAMESITE = config("REFRESH_COOKIE_SAMESITE", default="None")
+REFRESH_COOKIE_SECURE = config("REFRESH_COOKIE_SECURE", default=True, cast=bool)
+
 ROOT_URLCONF = 'tamiti_studio.urls'
 
 TEMPLATES = [
@@ -145,6 +149,11 @@ REST_FRAMEWORK = {
     'DEFAULT_FILTER_BACKENDS': ['django_filters.rest_framework.DjangoFilterBackend'],
     'DATETIME_FORMAT': 'iso-8601',
     'DATETIME_INPUT_FORMATS': ['iso-8601'],
+    'DEFAULT_THROTTLE_RATES': {
+        'token_refresh': '10/min',  # Prevent token refresh spam
+        'anon': '100/hour',
+        'user': '1000/hour'
+    }
 }
 
 SPECTACULAR_SETTINGS = {
