@@ -1,7 +1,7 @@
 from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from django.shortcuts import get_object_or_404
 from django.db import transaction
@@ -538,11 +538,21 @@ class TicketViewSet(viewsets.ModelViewSet):
         
         return False
     
+    def get_permissions(self):
+        """Allow public access for single-ticket retrievals."""
+        if getattr(self, "action", None) == "retrieve":
+            return [AllowAny()]
+        return [permission() for permission in self.permission_classes]
+
     def get_queryset(self):
         queryset = Ticket.objects.select_related(
             'batch__event', 'activated_by', 'scanned_by', 'ticket_type'
         )
-        
+
+        # Anonymous users can retrieve a single ticket shared via link
+        if getattr(self, "action", None) == "retrieve" and not self.request.user.is_authenticated:
+            return queryset.order_by('short_code')
+
         # Filter by batch
         batch_id = self.request.query_params.get('batch')
         if batch_id:
