@@ -48,12 +48,12 @@ class PartyViewSet(BaseModelViewSet):
 
 class AccountViewSet(BaseModelViewSet):
     serializer_class = AccountSerializer
-    
     def get_queryset(self):
         """
         Filter accounts based on scope and user permissions:
         - Personal accounts: only visible to owner
         - Company accounts: visible based on permissions
+        - Support scope filtering via query parameter
         """
         from permissions.services import PermissionService
         from django.contrib.contenttypes.models import ContentType
@@ -61,6 +61,9 @@ class AccountViewSet(BaseModelViewSet):
         user = self.request.user
         permission_service = PermissionService()
         account_content_type = ContentType.objects.get_for_model(Account)
+        
+        # Check if scope filtering is requested
+        scope_filter = self.request.query_params.get('scope')
         
         # Personal accounts - only show to owner
         personal_accounts = Account.objects.filter(
@@ -71,7 +74,7 @@ class AccountViewSet(BaseModelViewSet):
         # Company accounts - filter based on permissions
         company_accounts = Account.objects.filter(scope=FinanceScope.COMPANY)
         
-        # Filter company accounts based on read permissions
+        # Filter company accounts based on permissions
         accessible_company_accounts = []
         for account in company_accounts:
             if permission_service.has_permission(
@@ -103,12 +106,15 @@ class AccountViewSet(BaseModelViewSet):
             id__in=accessible_company_accounts
         )
         
-        # Combine both querysets using Q objects instead of union
-        from django.db.models import Q
-        
-        accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + list(filtered_company_accounts.values_list('id', flat=True))
-        
-        return Account.objects.filter(id__in=accessible_account_ids).order_by('scope', 'name')
+        # Apply scope filtering if requested
+        if scope_filter == 'personal':
+            return personal_accounts.order_by('name')
+        elif scope_filter == 'company':
+            return filtered_company_accounts.order_by('name')
+        else:
+            # Return both if no scope filter specified (backward compatibility)
+            accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + list(filtered_company_accounts.values_list('id', flat=True))
+            return Account.objects.filter(id__in=accessible_account_ids).order_by('scope', 'name')
 
 
 class InvoiceViewSet(BaseModelViewSet):
@@ -132,11 +138,19 @@ class InvoiceViewSet(BaseModelViewSet):
 
 
 class RequisitionViewSet(BaseModelViewSet):
-    queryset = Requisition.objects.select_related('requested_by', 'approved_by').all()
+    queryset = Requisition.objects.select_related('requested_by', 'approved_by').prefetch_related('items', 'documents').all()
     serializer_class = RequisitionSerializer
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
+    
+    def create(self, request, *args, **kwargs):
+        return super().create(request, *args, **kwargs)
 
     def get_serializer_class(self):
-        if self.action in ('list', 'retrieve', 'pending'):
+        if self.action == 'retrieve':
+            return RequisitionDetailSerializer
+        elif self.action in ('create', 'update', 'partial_update'):
+            return RequisitionCreateUpdateSerializer
+        elif self.action in ('list', 'pending'):
             return RequisitionReadSerializer
         return RequisitionSerializer
 
@@ -148,8 +162,77 @@ class RequisitionViewSet(BaseModelViewSet):
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         requisition = self.get_object()
+        if not requisition.can_approve(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+        
         requisition.approve(request.user)
-        return Response(self.get_serializer(requisition).data)
+        return Response({'status': 'approved'})
+    
+    @action(detail=True, methods=['post'])
+    def upload_document(self, request, pk=None):
+        requisition = self.get_object()
+        if not requisition.can_edit(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+        
+        file_obj = request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No file provided'}, status=400)
+        
+        from finance.serializers import RequisitionDocumentSerializer
+        document = RequisitionDocument.objects.create(
+            requisition=requisition,
+            file=file_obj,
+            filename=file_obj.name,
+            file_size=file_obj.size,
+            content_type=file_obj.content_type,
+            uploaded_by=request.user
+        )
+        
+        serializer = RequisitionDocumentSerializer(document)
+        return Response(serializer.data, status=201)
+    
+    @action(detail=True, methods=['delete'], url_path='documents/(?P<doc_id>[^/.]+)')
+    def delete_document(self, request, pk=None, doc_id=None):
+        requisition = self.get_object()
+        if not requisition.can_edit(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+        
+        try:
+            document = requisition.documents.get(id=doc_id)
+            document.delete()
+            return Response(status=204)
+        except RequisitionDocument.DoesNotExist:
+            return Response({'error': 'Document not found'}, status=404)
+    
+    @action(detail=True, methods=['post'])
+    def add_item(self, request, pk=None):
+        requisition = self.get_object()
+        if not requisition.can_edit(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+        
+        from finance.serializers import RequisitionItemSerializer
+        serializer = RequisitionItemSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save(requisition=requisition)
+            # Update requisition to use items
+            if not requisition.has_items:
+                requisition.has_items = True
+                requisition.save()
+            return Response(serializer.data, status=201)
+        return Response(serializer.errors, status=400)
+    
+    @action(detail=True, methods=['delete'], url_path='items/(?P<item_id>[^/.]+)')
+    def delete_item(self, request, pk=None, item_id=None):
+        requisition = self.get_object()
+        if not requisition.can_edit(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+        
+        try:
+            item = requisition.items.get(id=item_id)
+            item.delete()
+            return Response(status=204)
+        except RequisitionItem.DoesNotExist:
+            return Response({'error': 'Item not found'}, status=404)
 
 
 class GoalViewSet(BaseModelViewSet):
@@ -999,4 +1082,217 @@ class DebtSummaryAPIView(APIView):
         from finance.services import PersonalFinanceService
         summary = PersonalFinanceService.get_debt_summary(request.user)
         serializer = DebtSummarySerializer(summary)
+        return Response(serializer.data)
+
+
+# COMPANY FINANCE VIEWSETS
+
+class CompanyBudgetViewSet(BaseModelViewSet):
+    """ViewSet for company budgets"""
+    serializer_class = CompanyBudgetListSerializer
+    search_fields = ['name', 'department__name', 'category']
+    filterset_fields = ['department', 'category', 'period', 'is_active']
+    ordering = ['-start_date', 'name']
+    
+    def get_queryset(self):
+        """Filter budgets based on user permissions"""
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        
+        user = self.request.user
+        permission_service = PermissionService()
+        budget_content_type = ContentType.objects.get_for_model(CompanyBudget)
+        
+        # Get all company budgets
+        all_budgets = CompanyBudget.objects.all()
+        
+        # Filter based on permissions
+        accessible_budgets = []
+        for budget in all_budgets:
+            if permission_service.has_permission(
+                user=user,
+                action='read',
+                content_type=budget_content_type,
+                obj=budget,
+                use_cache=True,
+                log_check=False
+            ):
+                accessible_budgets.append(budget.id)
+        
+        # If no specific permissions, allow access to all (backward compatibility)
+        if not accessible_budgets and all_budgets.exists():
+            accessible_budgets = list(all_budgets.values_list('id', flat=True))
+        
+        return CompanyBudget.objects.filter(id__in=accessible_budgets).distinct()
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CompanyBudgetCreateSerializer
+        elif self.action in ('update', 'partial_update'):
+            return CompanyBudgetUpdateSerializer
+        return CompanyBudgetListSerializer
+
+    def perform_create(self, serializer):
+        """Set approval fields if user has permission"""
+        if self.request.user.is_staff:
+            serializer.save(
+                approved_by=self.request.user,
+                approved_at=timezone.now()
+            )
+        else:
+            serializer.save()
+
+
+class CompanySavingsGoalViewSet(BaseModelViewSet):
+    """ViewSet for company savings goals"""
+    serializer_class = CompanySavingsGoalListSerializer
+    search_fields = ['name', 'description', 'department__name']
+    filterset_fields = ['department', 'priority', 'is_active', 'is_completed']
+    ordering = ['-priority', '-target_date']
+    
+    def get_queryset(self):
+        """Filter savings goals based on user permissions"""
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        
+        user = self.request.user
+        permission_service = PermissionService()
+        goal_content_type = ContentType.objects.get_for_model(CompanySavingsGoal)
+        
+        # Get all company savings goals
+        all_goals = CompanySavingsGoal.objects.all()
+        
+        # Filter based on permissions
+        accessible_goals = []
+        for goal in all_goals:
+            if permission_service.has_permission(
+                user=user,
+                action='read',
+                content_type=goal_content_type,
+                obj=goal,
+                use_cache=True,
+                log_check=False
+            ):
+                accessible_goals.append(goal.id)
+        
+        # If no specific permissions, allow access to all (backward compatibility)
+        if not accessible_goals and all_goals.exists():
+            accessible_goals = list(all_goals.values_list('id', flat=True))
+        
+        return CompanySavingsGoal.objects.filter(id__in=accessible_goals).distinct()
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CompanySavingsGoalCreateSerializer
+        elif self.action in ('update', 'partial_update'):
+            return CompanySavingsGoalUpdateSerializer
+        return CompanySavingsGoalListSerializer
+
+    @action(detail=True, methods=['post'])
+    def add_contribution(self, request, pk=None):
+        """Add a contribution to the savings goal"""
+        goal = self.get_object()
+        amount = request.data.get('amount')
+        
+        if not amount or float(amount) <= 0:
+            return Response(
+                {'error': 'Valid amount is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        goal.current_amount += Decimal(str(amount))
+        goal.save(update_fields=['current_amount'])
+        
+        serializer = self.get_serializer(goal)
+        return Response(serializer.data)
+
+
+class CompanyRecurringTransactionViewSet(BaseModelViewSet):
+    """ViewSet for company recurring transactions"""
+    serializer_class = CompanyRecurringTransactionListSerializer
+    search_fields = ['name', 'department__name', 'account__name']
+    filterset_fields = ['department', 'transaction_type', 'category', 'frequency', 'is_active', 'requires_approval']
+    ordering = ['next_due_date', 'name']
+    
+    def get_queryset(self):
+        """Filter recurring transactions based on user permissions"""
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        
+        user = self.request.user
+        permission_service = PermissionService()
+        transaction_content_type = ContentType.objects.get_for_model(CompanyRecurringTransaction)
+        
+        # Get all company recurring transactions
+        all_transactions = CompanyRecurringTransaction.objects.all()
+        
+        # Filter based on permissions
+        accessible_transactions = []
+        for transaction in all_transactions:
+            if permission_service.has_permission(
+                user=user,
+                action='read',
+                content_type=transaction_content_type,
+                obj=transaction,
+                use_cache=True,
+                log_check=False
+            ):
+                accessible_transactions.append(transaction.id)
+        
+        # If no specific permissions, allow access to all (backward compatibility)
+        if not accessible_transactions and all_transactions.exists():
+            accessible_transactions = list(all_transactions.values_list('id', flat=True))
+        
+        return CompanyRecurringTransaction.objects.filter(id__in=accessible_transactions).distinct()
+    
+    def get_serializer_class(self):
+        if self.action == 'create':
+            return CompanyRecurringTransactionCreateSerializer
+        elif self.action in ('update', 'partial_update'):
+            return CompanyRecurringTransactionUpdateSerializer
+        return CompanyRecurringTransactionListSerializer
+
+    def perform_create(self, serializer):
+        """Set approval fields if user has permission"""
+        if self.request.user.is_staff:
+            serializer.save(approved_by=self.request.user)
+        else:
+            serializer.save()
+
+    @action(detail=True, methods=['post'])
+    def create_transaction(self, request, pk=None):
+        """Manually create a transaction from this recurring template"""
+        recurring_transaction = self.get_object()
+        
+        try:
+            transaction = recurring_transaction.create_transaction()
+            return Response({
+                'message': 'Transaction created successfully',
+                'transaction_id': transaction.id,
+                'next_due_date': recurring_transaction.next_due_date
+            })
+        except Exception as e:
+            return Response(
+                {'error': str(e)}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+    @action(detail=False, methods=['get'])
+    def due_transactions(self, request):
+        """Get all due recurring transactions"""
+        due_transactions = self.get_queryset().filter(
+            is_active=True,
+            next_due_date__lte=timezone.now().date()
+        )
+        serializer = self.get_serializer(due_transactions, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=['get'])
+    def overdue_transactions(self, request):
+        """Get all overdue recurring transactions"""
+        overdue_transactions = self.get_queryset().filter(
+            is_active=True,
+            next_due_date__lt=timezone.now().date()
+        )
+        serializer = self.get_serializer(overdue_transactions, many=True)
         return Response(serializer.data)
