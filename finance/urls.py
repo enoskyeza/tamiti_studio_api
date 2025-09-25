@@ -33,6 +33,11 @@ router.register(r'personal/loans', views.PersonalLoanViewSet, basename='personal
 router.register(r'personal/debt-payments', views.DebtPaymentViewSet, basename='personal-debt-payments')
 router.register(r'personal/loan-repayments', views.LoanRepaymentViewSet, basename='personal-loan-repayments')
 
+# Company Finance ViewSets
+router.register(r'company/budgets', views.CompanyBudgetViewSet, basename='company-budgets')
+router.register(r'company/savings-goals', views.CompanySavingsGoalViewSet, basename='company-savings-goals')
+router.register(r'company/recurring-transactions', views.CompanyRecurringTransactionViewSet, basename='company-recurring-transactions')
+
 urlpatterns = router.urls + [
     path('summary/', views.FinanceSummaryView.as_view(), name='finance-summary'),
     path('personal/dashboard/', views.PersonalFinanceDashboardView.as_view(), name='personal-finance-dashboard'),

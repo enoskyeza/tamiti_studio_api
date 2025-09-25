@@ -27,7 +27,7 @@ CSRF_COOKIE_SAMESITE = 'Lax'
 
 # Refresh token cookies should remain cross-site to support frontend on a different port
 REFRESH_COOKIE_SECURE = False
-REFRESH_COOKIE_SAMESITE = 'None'
+REFRESH_COOKIE_SAMESITE = 'Lax'  # Changed from 'None' to 'Lax' for development
 
 # Cookie domain settings for cross-port development
 SESSION_COOKIE_DOMAIN = None  # Allow cookies to work across localhost ports

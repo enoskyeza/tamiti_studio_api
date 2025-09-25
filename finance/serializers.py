@@ -1,9 +1,12 @@
 from decimal import Decimal
 from rest_framework import serializers
+from django.contrib.contenttypes.models import ContentType
+from comments.models import Comment
+from comments.serializers import CommentSerializer
 from finance.models import (
     Party, Account, Invoice, Payment, Transaction,
-    Goal, GoalMilestone, Requisition, Quotation, Receipt,
-    InvoiceItem, QuotationItem, ReceiptItem
+    Goal, GoalMilestone, Requisition, RequisitionDocument, RequisitionItem, 
+    Quotation, Receipt, InvoiceItem, QuotationItem, ReceiptItem
 )
 from common.enums import PartyType
 from finance.services import FinanceService
@@ -11,7 +14,8 @@ from users.models import User
 from django.contrib.auth import get_user_model
 from .models import (
     PersonalTransaction, PersonalBudget, PersonalSavingsGoal, PersonalTransactionRecurring,
-    PersonalAccountTransfer, PersonalDebt, PersonalLoan, DebtPayment, LoanRepayment
+    PersonalAccountTransfer, PersonalDebt, PersonalLoan, DebtPayment, LoanRepayment,
+    CompanyBudget, CompanySavingsGoal, CompanyRecurringTransaction
 )
 from common.enums import (
     FinanceScope, PersonalExpenseCategory, PersonalIncomeSource,
@@ -150,6 +154,213 @@ class RequisitionReadSerializer(serializers.ModelSerializer):
 
     def get_approved_by(self, obj):
         return self.get_approved_by_name(obj)
+
+
+class RequisitionDocumentSerializer(serializers.ModelSerializer):
+    uploaded_by_name = serializers.CharField(source='uploaded_by.get_full_name', read_only=True)
+    file_url = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = RequisitionDocument
+        fields = '__all__'
+        read_only_fields = ['uploaded_by', 'file_size', 'content_type']
+    
+    def get_file_url(self, obj):
+        return obj.file.url if obj.file else None
+
+
+class RequisitionItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = RequisitionItem
+        fields = '__all__'
+        extra_kwargs = {
+            'requisition': {'read_only': True}
+        }
+        read_only_fields = ['amount']
+
+
+class RequisitionCreateUpdateSerializer(serializers.ModelSerializer):
+    items = RequisitionItemSerializer(many=True, required=False)
+    documents = serializers.ListField(
+        child=serializers.FileField(),
+        write_only=True,
+        required=False
+    )
+    
+    class Meta:
+        model = Requisition
+        fields = '__all__'
+        read_only_fields = ['requested_by', 'approved_by', 'date_approved', 'calculated_total']
+    
+    def to_internal_value(self, data):
+        import json
+        import re
+        from django.http import QueryDict
+        
+        # Create a mutable dictionary for normalization
+        # Convert QueryDict to regular dict to avoid file object copy issues
+        normalized_data = {}
+        if hasattr(data, 'items'):
+            for key, value in data.items():
+                normalized_data[key] = value
+        else:
+            normalized_data = dict(data)
+        
+        # Handle items normalization - support multiple formats
+        items_list = []
+        
+        # Case 1: items as JSON string (common in multipart)
+        if 'items' in normalized_data:
+            items_value = normalized_data['items']
+            if isinstance(items_value, str):
+                try:
+                    items_list = json.loads(items_value)
+                except json.JSONDecodeError:
+                    pass  # Will be handled by validation
+            elif isinstance(items_value, list):
+                items_list = items_value
+        
+        # Case 2: items as indexed form fields (items[0][field] or items[0].field)
+        else:
+            # Find all item-related keys and group by index
+            # Support both items[0][field] and items[0].field patterns
+            item_pattern_bracket = re.compile(r'^items\[(\d+)\]\[(.+?)\]$')
+            item_pattern_dot = re.compile(r'^items\[(\d+)\]\.(.+?)$')
+            items_dict = {}
+            
+            keys_to_remove = []
+            for key in list(normalized_data.keys()):
+                match = item_pattern_bracket.match(key) or item_pattern_dot.match(key)
+                if match:
+                    index = int(match.group(1))
+                    field = match.group(2)
+                    
+                    if index not in items_dict:
+                        items_dict[index] = {}
+                    
+                    # Get the value
+                    value = normalized_data[key]
+                    items_dict[index][field] = value
+                    keys_to_remove.append(key)
+            
+            # Convert to list and remove original keys
+            if items_dict:
+                items_list = [items_dict[i] for i in sorted(items_dict.keys())]
+                
+                # Remove the original form field keys
+                for key in keys_to_remove:
+                    normalized_data.pop(key, None)
+        
+        # Set normalized items
+        if items_list:
+            normalized_data['items'] = items_list
+        
+        # Normalize documents: always extract from request.FILES to ensure a list of UploadedFile
+        try:
+            request = self.context.get('request')
+            if request is not None and hasattr(request, 'FILES'):
+                documents_list = request.FILES.getlist('documents')
+                if documents_list:
+                    normalized_data['documents'] = documents_list
+        except Exception:
+            # Do not fail normalization on document extraction issues; let DRF validation handle
+            pass
+            
+        return super().to_internal_value(normalized_data)
+    
+    def create(self, validated_data):
+        items_data = validated_data.pop('items', [])
+        documents_data = validated_data.pop('documents', [])
+        
+        # Set has_items flag
+        validated_data['has_items'] = len(items_data) > 0
+        validated_data['requested_by'] = self.context['request'].user
+        
+        requisition = Requisition.objects.create(**validated_data)
+        
+        # Create items
+        for item_data in items_data:
+            RequisitionItem.objects.create(requisition=requisition, **item_data)
+        
+        # Handle file uploads
+        for file_obj in documents_data:
+            RequisitionDocument.objects.create(
+                requisition=requisition,
+                file=file_obj,
+                filename=file_obj.name,
+                file_size=file_obj.size,
+                content_type=file_obj.content_type,
+                uploaded_by=self.context['request'].user
+            )
+        
+        return requisition
+    
+    def update(self, instance, validated_data):
+        items_data = validated_data.pop('items', None)
+        documents_data = validated_data.pop('documents', [])
+        
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        
+        # Update has_items flag if items are provided
+        if items_data is not None:
+            instance.has_items = len(items_data) > 0
+            # Clear existing items and create new ones
+            instance.items.all().delete()
+            for item_data in items_data:
+                RequisitionItem.objects.create(requisition=instance, **item_data)
+        
+        # Handle new file uploads
+        for file_obj in documents_data:
+            RequisitionDocument.objects.create(
+                requisition=instance,
+                file=file_obj,
+                filename=file_obj.name,
+                file_size=file_obj.size,
+                content_type=file_obj.content_type,
+                uploaded_by=self.context['request'].user
+            )
+        
+        instance.save()
+        return instance
+
+
+class RequisitionDetailSerializer(serializers.ModelSerializer):
+    items = RequisitionItemSerializer(many=True, read_only=True)
+    documents = RequisitionDocumentSerializer(many=True, read_only=True)
+    requested_by_name = serializers.CharField(source='requested_by.get_full_name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
+    can_approve = serializers.SerializerMethodField()
+    can_edit = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    comment_count = serializers.ReadOnlyField()
+    document_count = serializers.ReadOnlyField()
+    effective_total = serializers.ReadOnlyField()
+    activity_comments = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Requisition
+        fields = '__all__'
+    
+    def get_can_approve(self, obj):
+        user = self.context['request'].user
+        return obj.can_approve(user)
+    
+    def get_can_edit(self, obj):
+        user = self.context['request'].user
+        return obj.can_edit(user)
+    
+    def get_can_delete(self, obj):
+        user = self.context['request'].user
+        return obj.can_delete(user)
+
+    def get_activity_comments(self, obj):
+        # Return comments for this requisition ordered by created_at
+        ct = ContentType.objects.get_for_model(obj.__class__)
+        qs = Comment.objects.filter(content_type=ct, object_id=obj.id).order_by('created_at')
+        return CommentSerializer(qs, many=True, context=self.context).data
+
 
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
@@ -921,3 +1132,154 @@ class DebtSummarySerializer(serializers.Serializer):
     overdue_loans_count = serializers.IntegerField()
     overdue_debts = PersonalDebtListSerializer(many=True)
     overdue_loans = PersonalLoanListSerializer(many=True)
+
+
+# COMPANY FINANCE SERIALIZERS
+
+class CompanyBudgetListSerializer(serializers.ModelSerializer):
+    """Serializer for listing company budgets"""
+    department_name = serializers.CharField(source='department.name', read_only=True)
+    spent_percentage = serializers.ReadOnlyField()
+    remaining_amount = serializers.ReadOnlyField()
+    is_over_budget = serializers.ReadOnlyField()
+    is_near_limit = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = CompanyBudget
+        fields = [
+            'id', 'name', 'department', 'department_name', 'category', 'period',
+            'allocated_amount', 'spent_amount', 'spent_percentage', 'remaining_amount',
+            'start_date', 'end_date', 'is_active', 'alert_threshold',
+            'is_over_budget', 'is_near_limit', 'approved_by', 'approved_at',
+            'created_at', 'updated_at'
+        ]
+
+
+class CompanyBudgetCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating company budgets"""
+    
+    class Meta:
+        model = CompanyBudget
+        fields = [
+            'name', 'department', 'category', 'period', 'allocated_amount',
+            'start_date', 'end_date', 'is_active', 'alert_threshold'
+        ]
+
+    def validate(self, data):
+        if data['start_date'] >= data['end_date']:
+            raise serializers.ValidationError("End date must be after start date")
+        return data
+
+
+class CompanyBudgetUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating company budgets"""
+    
+    class Meta:
+        model = CompanyBudget
+        fields = [
+            'name', 'allocated_amount', 'end_date', 'is_active', 'alert_threshold'
+        ]
+
+
+class CompanySavingsGoalListSerializer(serializers.ModelSerializer):
+    """Serializer for listing company savings goals"""
+    department_name = serializers.CharField(source='department.name', read_only=True)
+    savings_account_name = serializers.CharField(source='savings_account.name', read_only=True)
+    progress_percentage = serializers.ReadOnlyField()
+    remaining_amount = serializers.ReadOnlyField()
+    is_completed = serializers.ReadOnlyField()
+    days_remaining = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = CompanySavingsGoal
+        fields = [
+            'id', 'name', 'description', 'department', 'department_name',
+            'target_amount', 'current_amount', 'progress_percentage', 'remaining_amount',
+            'start_date', 'target_date', 'days_remaining', 'is_active', 'priority',
+            'savings_account', 'savings_account_name', 'is_completed',
+            'created_at', 'updated_at'
+        ]
+
+
+class CompanySavingsGoalCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating company savings goals"""
+    
+    class Meta:
+        model = CompanySavingsGoal
+        fields = [
+            'name', 'description', 'department', 'target_amount', 'current_amount',
+            'start_date', 'target_date', 'is_active', 'priority', 'savings_account'
+        ]
+
+    def validate(self, data):
+        if data['start_date'] >= data['target_date']:
+            raise serializers.ValidationError("Target date must be after start date")
+        if data.get('current_amount', 0) > data['target_amount']:
+            raise serializers.ValidationError("Current amount cannot exceed target amount")
+        return data
+
+
+class CompanySavingsGoalUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating company savings goals"""
+    
+    class Meta:
+        model = CompanySavingsGoal
+        fields = [
+            'name', 'description', 'target_amount', 'current_amount',
+            'target_date', 'is_active', 'priority', 'savings_account'
+        ]
+
+    def validate(self, data):
+        if 'current_amount' in data and 'target_amount' in data:
+            if data['current_amount'] > data['target_amount']:
+                raise serializers.ValidationError("Current amount cannot exceed target amount")
+        return data
+
+
+class CompanyRecurringTransactionListSerializer(serializers.ModelSerializer):
+    """Serializer for listing company recurring transactions"""
+    department_name = serializers.CharField(source='department.name', read_only=True)
+    account_name = serializers.CharField(source='account.name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
+    is_due = serializers.ReadOnlyField()
+    is_overdue = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = CompanyRecurringTransaction
+        fields = [
+            'id', 'name', 'department', 'department_name', 'amount', 'transaction_type',
+            'category', 'account', 'account_name', 'frequency', 'start_date', 'end_date',
+            'next_due_date', 'is_active', 'auto_create', 'requires_approval',
+            'approved_by', 'approved_by_name', 'is_due', 'is_overdue',
+            'last_created_date', 'total_created', 'created_at', 'updated_at'
+        ]
+
+
+class CompanyRecurringTransactionCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating company recurring transactions"""
+    
+    class Meta:
+        model = CompanyRecurringTransaction
+        fields = [
+            'name', 'department', 'amount', 'transaction_type', 'category',
+            'account', 'frequency', 'start_date', 'end_date', 'next_due_date',
+            'is_active', 'auto_create', 'requires_approval'
+        ]
+
+    def validate(self, data):
+        if data.get('end_date') and data['start_date'] >= data['end_date']:
+            raise serializers.ValidationError("End date must be after start date")
+        if data['next_due_date'] < data['start_date']:
+            raise serializers.ValidationError("Next due date cannot be before start date")
+        return data
+
+
+class CompanyRecurringTransactionUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for updating company recurring transactions"""
+    
+    class Meta:
+        model = CompanyRecurringTransaction
+        fields = [
+            'name', 'amount', 'category', 'account', 'frequency',
+            'end_date', 'next_due_date', 'is_active', 'auto_create', 'requires_approval'
+        ]

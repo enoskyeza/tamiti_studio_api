@@ -167,13 +167,108 @@ class Requisition(BaseModel):
     purpose = models.TextField()
     comments = models.TextField(blank=True)
     date_approved = models.DateField(null=True, blank=True)
-
+    
+    # New fields for enhanced functionality
+    has_items = models.BooleanField(default=False, help_text="True if requisition uses itemized breakdown")
+    calculated_total = models.DecimalField(max_digits=12, decimal_places=2, default=0, help_text="Auto-calculated from items")
 
     def approve(self, user: User):
         self.approved_by = user
         self.status = 'approved'
         self.date_approved = timezone.now().date()
         self.save()
+    
+    def update_total(self):
+        """Update calculated_total from items"""
+        if self.has_items:
+            from django.db.models import Sum
+            total = self.items.aggregate(total=Sum('amount'))['total'] or 0
+            self.calculated_total = total
+            # Update main amount if using items
+            self.amount = total
+            self.save(update_fields=['calculated_total', 'amount'])
+    
+    @property
+    def effective_total(self):
+        """Return calculated total if has items, otherwise manual amount"""
+        return self.calculated_total if self.has_items else self.amount
+    
+    @property
+    def document_count(self):
+        return self.documents.count()
+    
+    @property
+    def comment_count(self):
+        from django.contrib.contenttypes.models import ContentType
+        from comments.models import Comment
+        ct = ContentType.objects.get_for_model(self)
+        return Comment.objects.filter(content_type=ct, object_id=self.id).count()
+    
+    def can_approve(self, user):
+        """Check if user can approve this requisition"""
+        from permissions.services import PermissionService
+        from django.contrib.contenttypes.models import ContentType
+        permission_service = PermissionService()
+        return permission_service.has_permission(
+            user=user,
+            action='approve',
+            content_type=ContentType.objects.get_for_model(Requisition),
+            obj=self,
+            use_cache=True,
+            log_check=False
+        )
+
+    def can_edit(self, user):
+        """Check if user can edit this requisition"""
+        return self.requested_by == user or user.is_staff
+
+    def can_delete(self, user):
+        """Check if user can delete this requisition"""
+        return self.requested_by == user and self.status == 'pending'
+
+
+class RequisitionDocument(BaseModel):
+    """Supporting documents for requisitions"""
+    requisition = models.ForeignKey(Requisition, related_name='documents', on_delete=models.CASCADE)
+    file = models.FileField(upload_to='requisitions/documents/%Y/%m/')
+    filename = models.CharField(max_length=255)
+    file_size = models.PositiveBigIntegerField()
+    content_type = models.CharField(max_length=100)
+    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.filename} - {self.requisition.purpose[:50]}"
+
+
+class RequisitionItem(BaseModel):
+    """Individual items/particulars for requisitions"""
+    requisition = models.ForeignKey(Requisition, related_name='items', on_delete=models.CASCADE)
+    particular = models.CharField(max_length=255, help_text="Item description")
+    quantity = models.DecimalField(max_digits=10, decimal_places=2, default=1)
+    unit_cost = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(max_digits=12, decimal_places=2, editable=False)
+    
+    class Meta:
+        ordering = ['id']
+    
+    def save(self, *args, **kwargs):
+        # Calculate amount from quantity and unit cost
+        self.amount = self.quantity * self.unit_cost
+        super().save(*args, **kwargs)
+        # Update requisition total after saving
+        self.requisition.update_total()
+    
+    def delete(self, *args, **kwargs):
+        requisition = self.requisition
+        super().delete(*args, **kwargs)
+        # Update requisition total after deletion
+        requisition.update_total()
+    
+    def __str__(self):
+        return f"{self.particular} - {self.quantity} x {self.unit_cost}"
 
 
 class Payment(BaseModel):
@@ -889,3 +984,234 @@ class LoanRepayment(BaseModel):
 
     def __str__(self):
         return f"Repayment: {self.amount} from {self.loan.borrower_name}"
+
+
+# COMPANY FINANCE MODELS
+
+class CompanyBudget(BaseModel):
+    """
+    Budget management for company expense categories
+    """
+    name = models.CharField(max_length=100, help_text="Budget name/title")
+    department = models.ForeignKey('accounts.Department', on_delete=models.CASCADE, 
+                                 related_name='budgets', null=True, blank=True)
+    category = models.CharField(max_length=50, choices=PersonalExpenseCategory.choices)
+    period = models.CharField(max_length=20, choices=BudgetPeriod.choices, default=BudgetPeriod.MONTHLY)
+
+    # Budget amounts
+    allocated_amount = models.DecimalField(max_digits=12, decimal_places=2,
+                                        validators=[MinValueValidator(Decimal('0.01'))])
+    spent_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                     validators=[MinValueValidator(Decimal('0'))])
+
+    # Period tracking
+    start_date = models.DateField()
+    end_date = models.DateField()
+
+    # Settings
+    is_active = models.BooleanField(default=True)
+    alert_threshold = models.DecimalField(max_digits=5, decimal_places=2, default=80,
+                                        help_text="Alert when spent percentage reaches this threshold")
+    
+    # Approval workflow
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='approved_company_budgets')
+    approved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        unique_together = ['department', 'category', 'start_date']
+        ordering = ['-start_date', 'category']
+
+    @property
+    def spent_percentage(self):
+        if self.allocated_amount > 0:
+            return (self.spent_amount / self.allocated_amount) * 100
+        return 0
+
+    @property
+    def remaining_amount(self):
+        return self.allocated_amount - self.spent_amount
+
+    @property
+    def is_over_budget(self):
+        return self.spent_amount > self.allocated_amount
+
+    @property
+    def is_near_limit(self):
+        return self.spent_percentage >= self.alert_threshold
+
+    def __str__(self):
+        dept_name = self.department.name if self.department else "Company"
+        return f"{dept_name} - {self.name} ({self.get_period_display()})"
+
+
+class CompanySavingsGoal(BaseModel):
+    """
+    Company savings goals and targets
+    """
+    name = models.CharField(max_length=100, help_text="Savings goal name")
+    description = models.TextField(blank=True, help_text="Goal description and purpose")
+    department = models.ForeignKey('accounts.Department', on_delete=models.CASCADE,
+                                 related_name='savings_goals', null=True, blank=True)
+    
+    # Goal amounts
+    target_amount = models.DecimalField(max_digits=12, decimal_places=2,
+                                      validators=[MinValueValidator(Decimal('0.01'))])
+    current_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0,
+                                       validators=[MinValueValidator(Decimal('0'))])
+    
+    # Timeline
+    start_date = models.DateField()
+    target_date = models.DateField()
+    
+    # Settings
+    is_active = models.BooleanField(default=True)
+    priority = models.CharField(max_length=20, choices=[
+        ('low', 'Low'),
+        ('medium', 'Medium'),
+        ('high', 'High'),
+        ('critical', 'Critical')
+    ], default='medium')
+    
+    # Linked account for savings
+    savings_account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True, blank=True,
+                                      related_name='company_savings_goals')
+
+    class Meta:
+        ordering = ['-priority', '-target_date']
+
+    @property
+    def progress_percentage(self):
+        if self.target_amount > 0:
+            return min((self.current_amount / self.target_amount) * 100, 100)
+        return 0
+
+    @property
+    def remaining_amount(self):
+        return max(self.target_amount - self.current_amount, 0)
+
+    @property
+    def is_completed(self):
+        return self.current_amount >= self.target_amount
+
+    @property
+    def days_remaining(self):
+        from django.utils import timezone
+        if self.target_date:
+            delta = self.target_date - timezone.now().date()
+            return delta.days
+        return None
+
+    def __str__(self):
+        dept_name = self.department.name if self.department else "Company"
+        return f"{dept_name} - {self.name}"
+
+
+class CompanyRecurringTransaction(BaseModel):
+    """
+    Recurring transactions for company operations (bills, subscriptions, etc.)
+    """
+    name = models.CharField(max_length=100, help_text="Transaction name/description")
+    department = models.ForeignKey('accounts.Department', on_delete=models.CASCADE,
+                                 related_name='recurring_transactions', null=True, blank=True)
+    
+    # Transaction details
+    amount = models.DecimalField(max_digits=12, decimal_places=2,
+                               validators=[MinValueValidator(Decimal('0.01'))])
+    transaction_type = models.CharField(max_length=20, choices=[
+        ('expense', 'Expense'),
+        ('income', 'Income'),
+    ], default='expense')
+    
+    category = models.CharField(max_length=50, choices=PersonalExpenseCategory.choices)
+    account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name='company_recurring_transactions')
+    
+    # Recurrence settings
+    frequency = models.CharField(max_length=20, choices=[
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+        ('quarterly', 'Quarterly'),
+        ('yearly', 'Yearly'),
+    ], default='monthly')
+    
+    # Schedule
+    start_date = models.DateField()
+    end_date = models.DateField(null=True, blank=True, help_text="Leave blank for indefinite")
+    next_due_date = models.DateField()
+    
+    # Settings
+    is_active = models.BooleanField(default=True)
+    auto_create = models.BooleanField(default=False, 
+                                    help_text="Automatically create transactions when due")
+    
+    # Approval workflow
+    requires_approval = models.BooleanField(default=True)
+    approved_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True,
+                                  related_name='approved_recurring_transactions')
+    
+    # Tracking
+    last_created_date = models.DateField(null=True, blank=True)
+    total_created = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['next_due_date', 'name']
+
+    @property
+    def is_due(self):
+        from django.utils import timezone
+        return self.next_due_date <= timezone.now().date()
+
+    @property
+    def is_overdue(self):
+        from django.utils import timezone
+        return self.next_due_date < timezone.now().date()
+
+    def calculate_next_due_date(self):
+        """Calculate the next due date based on frequency"""
+        from dateutil.relativedelta import relativedelta
+        
+        if self.frequency == 'daily':
+            return self.next_due_date + timedelta(days=1)
+        elif self.frequency == 'weekly':
+            return self.next_due_date + timedelta(weeks=1)
+        elif self.frequency == 'monthly':
+            return self.next_due_date + relativedelta(months=1)
+        elif self.frequency == 'quarterly':
+            return self.next_due_date + relativedelta(months=3)
+        elif self.frequency == 'yearly':
+            return self.next_due_date + relativedelta(years=1)
+        return self.next_due_date
+
+    def create_transaction(self):
+        """Create a transaction from this recurring template"""
+        if self.transaction_type == 'expense':
+            transaction = Transaction.objects.create(
+                account=self.account,
+                amount=self.amount,
+                expense_category=self.category,
+                description=f"Recurring: {self.name}",
+                date=self.next_due_date,
+                notes=f"Auto-generated from recurring transaction: {self.name}"
+            )
+        else:
+            transaction = PersonalIncome.objects.create(
+                account=self.account,
+                amount=self.amount,
+                income_source='OTHER',
+                description=f"Recurring: {self.name}",
+                date=self.next_due_date,
+                notes=f"Auto-generated from recurring transaction: {self.name}"
+            )
+        
+        # Update tracking
+        self.last_created_date = self.next_due_date
+        self.next_due_date = self.calculate_next_due_date()
+        self.total_created += 1
+        self.save(update_fields=['last_created_date', 'next_due_date', 'total_created'])
+        
+        return transaction
+
+    def __str__(self):
+        dept_name = self.department.name if self.department else "Company"
+        return f"{dept_name} - {self.name} ({self.get_frequency_display()})"

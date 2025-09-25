@@ -1,6 +1,6 @@
 from django.contrib import admin
 from finance.models import (
-    Party, Account, Invoice, InvoiceItem, Payment, Transaction,
+    Party, Account, Invoice, InvoiceItem, Payment, Transaction, Requisition, RequisitionDocument, RequisitionItem,
     PersonalTransaction, PersonalBudget, PersonalSavingsGoal, PersonalTransactionRecurring,
     PersonalAccountTransfer, PersonalDebt, PersonalLoan, DebtPayment, LoanRepayment
 )
@@ -217,3 +217,94 @@ class LoanRepaymentAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         return super().get_queryset(request).select_related('loan', 'account')
+
+
+# Requisition Admin Classes
+
+class RequisitionDocumentInline(admin.TabularInline):
+    model = RequisitionDocument
+    extra = 0
+    readonly_fields = ('uploaded_by', 'file_size', 'content_type', 'created_at')
+    fields = ('file', 'filename', 'uploaded_by', 'file_size', 'content_type', 'created_at')
+
+
+class RequisitionItemInline(admin.TabularInline):
+    model = RequisitionItem
+    extra = 1
+    readonly_fields = ('amount',)
+    fields = ('particular', 'quantity', 'unit_cost', 'amount')
+
+
+@admin.register(Requisition)
+class RequisitionAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'purpose_short', 'requested_by', 'status', 'urgency', 
+        'amount', 'effective_total', 'has_items', 'document_count', 'date_approved'
+    )
+    list_filter = ('status', 'urgency', 'has_items', 'created_at', 'date_approved')
+    search_fields = ('purpose', 'comments', 'requested_by__username', 'approved_by__username')
+    readonly_fields = ('calculated_total', 'effective_total', 'document_count', 'comment_count', 'created_at', 'updated_at')
+    date_hierarchy = 'created_at'
+    inlines = [RequisitionItemInline, RequisitionDocumentInline]
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('purpose', 'amount', 'urgency', 'status', 'comments')
+        }),
+        ('Users', {
+            'fields': ('requested_by', 'approved_by', 'date_approved')
+        }),
+        ('Items & Calculations', {
+            'fields': ('has_items', 'calculated_total', 'effective_total')
+        }),
+        ('Metadata', {
+            'fields': ('document_count', 'comment_count', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+
+    def purpose_short(self, obj):
+        return obj.purpose[:50] + '...' if len(obj.purpose) > 50 else obj.purpose
+    purpose_short.short_description = 'Purpose'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('requested_by', 'approved_by').prefetch_related('items', 'documents')
+
+
+@admin.register(RequisitionDocument)
+class RequisitionDocumentAdmin(admin.ModelAdmin):
+    list_display = ('filename', 'requisition_purpose', 'uploaded_by', 'file_size_display', 'created_at')
+    list_filter = ('content_type', 'uploaded_by', 'created_at')
+    search_fields = ('filename', 'requisition__purpose', 'uploaded_by__username')
+    readonly_fields = ('file_size', 'content_type', 'created_at', 'updated_at')
+
+    def requisition_purpose(self, obj):
+        return obj.requisition.purpose[:30] + '...' if len(obj.requisition.purpose) > 30 else obj.requisition.purpose
+    requisition_purpose.short_description = 'Requisition'
+
+    def file_size_display(self, obj):
+        if obj.file_size < 1024:
+            return f"{obj.file_size} B"
+        elif obj.file_size < 1024 * 1024:
+            return f"{obj.file_size / 1024:.1f} KB"
+        else:
+            return f"{obj.file_size / (1024 * 1024):.1f} MB"
+    file_size_display.short_description = 'File Size'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('requisition', 'uploaded_by')
+
+
+@admin.register(RequisitionItem)
+class RequisitionItemAdmin(admin.ModelAdmin):
+    list_display = ('particular', 'requisition_purpose', 'quantity', 'unit_cost', 'amount')
+    list_filter = ('requisition__status', 'requisition__urgency', 'created_at')
+    search_fields = ('particular', 'requisition__purpose')
+    readonly_fields = ('amount', 'created_at', 'updated_at')
+
+    def requisition_purpose(self, obj):
+        return obj.requisition.purpose[:30] + '...' if len(obj.requisition.purpose) > 30 else obj.requisition.purpose
+    requisition_purpose.short_description = 'Requisition'
+
+    def get_queryset(self, request):
+        return super().get_queryset(request).select_related('requisition')
