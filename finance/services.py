@@ -552,17 +552,27 @@ class PersonalFinanceService:
         from common.enums import FinanceScope, TransactionType, PersonalExpenseCategory, PersonalIncomeSource
         from decimal import Decimal
 
-        # Validate accounts
-        from_account = Account.objects.get(
-            id=transfer_data['from_account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
-        to_account = Account.objects.get(
-            id=transfer_data['to_account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
+        # Validate accounts - handle both Account objects and IDs
+        from_account_data = transfer_data['from_account']
+        to_account_data = transfer_data['to_account']
+        
+        if isinstance(from_account_data, Account):
+            from_account = from_account_data
+        else:
+            from_account = Account.objects.get(
+                id=from_account_data,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
+            
+        if isinstance(to_account_data, Account):
+            to_account = to_account_data
+        else:
+            to_account = Account.objects.get(
+                id=to_account_data,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
 
         if from_account == to_account:
             raise ValidationError("Cannot transfer to the same account")
