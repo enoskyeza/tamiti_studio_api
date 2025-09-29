@@ -17,7 +17,7 @@ class TaskFilter(django_filters.FilterSet):
     class Meta:
         model = Task
         fields = [
-            'project', 'status', 'priority', 'due_date', 'assigned_to', 'assigned_team', 'origin_app',
+            'project', 'status', 'priority', 'due_date', 'assigned_to', 'assigned_team', 'origin_app', 'is_completed',
         ]
 
     def filter_tag(self, queryset, name, value):
