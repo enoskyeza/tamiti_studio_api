@@ -177,6 +177,20 @@ class SaccoMember(BaseModel):
     is_treasurer = models.BooleanField(default=False)
     is_chairperson = models.BooleanField(default=False)
     
+    # Savings Goal
+    savings_goal = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Member's personal savings goal"
+    )
+    savings_goal_deadline = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Target date to reach savings goal"
+    )
+    
     class Meta:
         ordering = ['member_number']
         unique_together = [['sacco', 'member_number']]
@@ -244,7 +258,12 @@ class MemberPassbook(BaseModel):
         balances = {}
         
         for section in sections:
-            balances[section.name] = self.get_section_balance(section)
+            balances[section.id] = {
+                'section_id': section.id,
+                'section_name': section.name,
+                'section_type': section.section_type,
+                'balance': float(self.get_section_balance(section))
+            }
         
         return balances
 
