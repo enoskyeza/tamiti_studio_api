@@ -42,4 +42,5 @@ urlpatterns = router.urls + [
     path('summary/', views.FinanceSummaryView.as_view(), name='finance-summary'),
     path('personal/dashboard/', views.PersonalFinanceDashboardView.as_view(), name='personal-finance-dashboard'),
     path('personal/debt-summary/', views.DebtSummaryAPIView.as_view(), name='personal-debt-summary'),
+    path('personal/interest-summary/', views.InterestSummaryAPIView.as_view(), name='personal-interest-summary'),
 ]

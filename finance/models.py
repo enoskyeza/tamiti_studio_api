@@ -1,3 +1,5 @@
+from datetime import datetime, time
+
 from django.db import models
 from django.utils import timezone
 from core.models import BaseModel
@@ -7,8 +9,9 @@ from common.enums import (
     PriorityLevel, PaymentCategory, QuotationStatus, PaymentMethod,
     FinanceScope, PersonalExpenseCategory, PersonalIncomeSource, BudgetPeriod
 )
-from django.db.models import Sum, F, DecimalField, Value as V
+from django.db.models import Sum, F, DecimalField, Value as V, Q
 from django.db.models.functions import Coalesce
+from django.core.exceptions import ValidationError
 from django.core.validators import MinValueValidator
 from decimal import Decimal
 
@@ -428,6 +431,35 @@ class PersonalTransaction(BaseModel):
     expense_category = models.CharField(max_length=50, choices=PersonalExpenseCategory.choices, blank=True,
                                       help_text="Required for expense transactions")
 
+    # Linkages
+    linked_invoice = models.ForeignKey(
+        'finance.Invoice', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='personal_transactions'
+    )
+    linked_goal = models.ForeignKey(
+        'finance.PersonalSavingsGoal', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transactions'
+    )
+    linked_budget = models.ForeignKey(
+        'finance.PersonalBudget', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='transactions'
+    )
+    invoice_payment = models.OneToOneField(
+        'finance.Payment', null=True, blank=True, on_delete=models.SET_NULL,
+        related_name='personal_transaction'
+    )
+
+    GOAL_DIRECTION_CHOICES = (
+        ('deposit', 'Deposit'),
+        ('withdraw', 'Withdraw'),
+    )
+    goal_applied_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=Decimal('0')
+    )
+    goal_applied_direction = models.CharField(
+        max_length=10, choices=GOAL_DIRECTION_CHOICES, blank=True, default=''
+    )
+
     # Common metadata
     reason = models.TextField(help_text="Reason/purpose for this transaction")
     date = models.DateTimeField(default=timezone.now, db_index=True)
@@ -445,6 +477,10 @@ class PersonalTransaction(BaseModel):
     is_recurring = models.BooleanField(default=False)
     recurring_parent = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True,
                                        related_name='recurring_instances')
+    affects_profit = models.BooleanField(
+        default=True,
+        help_text="If false, exclude from income/expense reporting while still impacting cash balances"
+    )
 
     class Meta:
         ordering = ['-date', '-created_at']
@@ -530,12 +566,15 @@ class PersonalBudget(BaseModel):
         return self.progress_percentage >= self.alert_threshold
 
     def update_spent_amount(self):
-        """Recalculate spent amount from transactions"""
-        total = PersonalTransaction.objects.filter(
+        """Recalculate spent amount from transactions, including direct links"""
+        transactions = PersonalTransaction.objects.filter(
             user=self.user,
             type=TransactionType.EXPENSE,
-            expense_category=self.category,
             date__range=[self.start_date, self.end_date]
+        )
+
+        total = transactions.filter(
+            Q(expense_category=self.category) | Q(linked_budget=self)
         ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
 
         self.spent_amount = total
@@ -602,24 +641,30 @@ class PersonalSavingsGoal(BaseModel):
             return self.remaining_amount / Decimal(str(months_remaining))
         return Decimal('0')
 
-    def add_contribution(self, amount, description="Manual contribution"):
+    def add_contribution(self, amount, description="Manual contribution", create_transaction=True, transaction=None):
         """Add a contribution to this savings goal"""
         self.current_amount += amount
         if self.current_amount >= self.target_amount and not self.is_achieved:
             self.is_achieved = True
             self.achieved_date = timezone.now().date()
+        if self.current_amount < self.target_amount and self.is_achieved:
+            self.is_achieved = False
+            self.achieved_date = None
         self.save()
 
-        # Create a savings transaction
-        PersonalTransaction.objects.create(
-            user=self.user,
-            type=TransactionType.EXPENSE,
-            amount=amount,
-            account=self.user.account_set.filter(scope=FinanceScope.PERSONAL).first(),
-            expense_category=PersonalExpenseCategory.SAVINGS,
-            description=f"Savings for: {self.name}",
-            reason=description
-        )
+        if create_transaction:
+            PersonalTransaction.objects.create(
+                user=self.user,
+                type=TransactionType.EXPENSE,
+                amount=amount,
+                account=self.user.account_set.filter(scope=FinanceScope.PERSONAL).first(),
+                expense_category=PersonalExpenseCategory.SAVINGS,
+                description=f"Savings for: {self.name}",
+                reason=description,
+                linked_goal=self,
+                goal_applied_amount=amount,
+                goal_applied_direction='deposit',
+            )
 
     def __str__(self):
         return f"{self.name} - {self.progress_percentage:.1f}% complete"
@@ -703,6 +748,13 @@ class PersonalAccountTransfer(BaseModel):
     to_account = models.ForeignKey(Account, on_delete=models.CASCADE, related_name='incoming_transfers',
                                  limit_choices_to={'scope': FinanceScope.PERSONAL})
     amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    received_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Amount credited to the destination account after applying exchange rate"
+    )
 
     # Fees and charges
     transfer_fee = models.DecimalField(max_digits=10, decimal_places=2, default=0,
@@ -739,6 +791,12 @@ class PersonalAccountTransfer(BaseModel):
     def total_debit_amount(self):
         """Total amount debited from source account (amount + fee)"""
         return (self.amount or Decimal('0')) + (self.transfer_fee or Decimal('0'))
+
+    def save(self, *args, **kwargs):
+        if not self.received_amount:
+            calculated = (self.amount or Decimal('0')) * (self.exchange_rate or Decimal('1'))
+            self.received_amount = calculated.quantize(Decimal('0.01')) if calculated else Decimal('0')
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"Transfer: {self.amount} from {self.from_account.name} to {self.to_account.name}"
@@ -793,7 +851,7 @@ class PersonalDebt(BaseModel):
 
     @property
     def total_paid(self):
-        return self.payments.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        return self.payments.aggregate(total=Sum('principal_amount'))['total'] or Decimal('0')
 
     @property
     def remaining_balance(self):
@@ -803,16 +861,27 @@ class PersonalDebt(BaseModel):
     def is_overdue(self):
         return self.due_date < timezone.now().date() and not self.is_fully_paid
 
-    def make_payment(self, amount, account, notes=""):
+    def make_payment(self, amount, account, notes="", interest_amount=Decimal('0')):
         """Make a payment towards this debt"""
         if amount <= 0:
             raise ValueError("Payment amount must be positive")
+        if interest_amount < 0:
+            raise ValueError("Interest amount cannot be negative")
+
+        principal_amount = Decimal(str(amount)) - Decimal(str(interest_amount))
+        if principal_amount < 0:
+            raise ValueError("Interest amount cannot exceed payment amount")
+
+        if principal_amount > self.remaining_balance:
+            raise ValueError("Principal component cannot exceed the remaining balance")
 
         payment = DebtPayment.objects.create(
             debt=self,
             amount=amount,
             account=account,
-            notes=notes
+            notes=notes,
+            principal_amount=principal_amount,
+            interest_amount=Decimal(str(interest_amount))
         )
 
         # Check if debt is fully paid
@@ -867,7 +936,7 @@ class PersonalLoan(BaseModel):
 
     @property
     def total_repaid(self):
-        return self.repayments.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        return self.repayments.aggregate(total=Sum('principal_amount'))['total'] or Decimal('0')
 
     @property
     def remaining_balance(self):
@@ -877,16 +946,27 @@ class PersonalLoan(BaseModel):
     def is_overdue(self):
         return self.due_date < timezone.now().date() and not self.is_fully_repaid
 
-    def receive_repayment(self, amount, account, notes=""):
+    def receive_repayment(self, amount, account, notes="", interest_amount=Decimal('0')):
         """Receive a repayment for this loan"""
         if amount <= 0:
             raise ValueError("Repayment amount must be positive")
+        if interest_amount < 0:
+            raise ValueError("Interest amount cannot be negative")
+
+        principal_amount = Decimal(str(amount)) - Decimal(str(interest_amount))
+        if principal_amount < 0:
+            raise ValueError("Interest amount cannot exceed repayment amount")
+
+        if principal_amount > self.remaining_balance:
+            raise ValueError("Principal component cannot exceed the outstanding loan balance")
 
         repayment = LoanRepayment.objects.create(
             loan=self,
             amount=amount,
             account=account,
-            notes=notes
+            notes=notes,
+            principal_amount=principal_amount,
+            interest_amount=Decimal(str(interest_amount))
         )
 
         # Check if loan is fully repaid
@@ -917,28 +997,81 @@ class DebtPayment(BaseModel):
     # Linked transaction (automatically created)
     transaction = models.OneToOneField(PersonalTransaction, on_delete=models.CASCADE,
                                      null=True, blank=True, related_name='debt_payment')
+    principal_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Portion of the payment applied to principal"
+    )
+    interest_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Portion of the payment applied to interest"
+    )
 
     class Meta:
         ordering = ['-payment_date']
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding
+        interest = self.interest_amount or Decimal('0')
+        principal = self.principal_amount or Decimal('0')
+
+        if principal == 0:
+            principal = self.amount - interest
+
+        if principal < 0:
+            raise ValidationError("Interest amount cannot exceed total payment")
+
+        total_components = (principal + interest).quantize(Decimal('0.01'))
+        if total_components != self.amount.quantize(Decimal('0.01')):
+            raise ValidationError("Principal and interest must sum to the total payment amount")
+
+        self.principal_amount = principal
+        self.interest_amount = interest
+
         super().save(*args, **kwargs)
 
         if is_new:
-            # Create corresponding expense transaction
-            self.transaction = PersonalTransaction.objects.create(
-                user=self.debt.user,
-                type=TransactionType.EXPENSE,
-                amount=self.amount,
-                account=self.account,
-                expense_category=PersonalExpenseCategory.DEBT,
-                description=f"Debt payment to {self.debt.creditor_name}",
-                reason=f"Payment for debt: {self.debt.description}",
-                date=timezone.now(),
-                notes=self.notes
-            )
-            self.save(update_fields=['transaction'])
+            payment_dt = datetime.combine(self.payment_date, time.min)
+            if timezone.is_naive(payment_dt):
+                payment_dt = timezone.make_aware(payment_dt)
+
+            principal_tx = None
+            if principal > 0:
+                principal_tx = PersonalTransaction.objects.create(
+                    user=self.debt.user,
+                    type=TransactionType.EXPENSE,
+                    amount=principal,
+                    account=self.account,
+                    expense_category=PersonalExpenseCategory.DEBT,
+                    description=f"Debt payment to {self.debt.creditor_name}",
+                    reason=f"Payment for debt: {self.debt.description}",
+                    date=payment_dt,
+                    notes=self.notes,
+                    affects_profit=False,
+                )
+
+            if interest > 0:
+                PersonalTransaction.objects.create(
+                    user=self.debt.user,
+                    type=TransactionType.EXPENSE,
+                    amount=interest,
+                    account=self.account,
+                    expense_category=PersonalExpenseCategory.DEBT_INTEREST,
+                    description=f"Debt interest payment to {self.debt.creditor_name}",
+                    reason=f"Interest for debt: {self.debt.description}",
+                    date=payment_dt,
+                    notes=self.notes,
+                    affects_profit=True,
+                )
+
+            if principal_tx:
+                self.transaction = principal_tx
+                super().save(update_fields=['transaction'])
 
     def __str__(self):
         return f"Payment: {self.amount} to {self.debt.creditor_name}"
@@ -959,28 +1092,81 @@ class LoanRepayment(BaseModel):
     # Linked transaction (automatically created)
     transaction = models.OneToOneField(PersonalTransaction, on_delete=models.CASCADE,
                                      null=True, blank=True, related_name='loan_repayment')
+    principal_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Portion of the repayment applied to principal"
+    )
+    interest_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Portion of the repayment recognised as interest"
+    )
 
     class Meta:
         ordering = ['-repayment_date']
 
     def save(self, *args, **kwargs):
         is_new = self._state.adding
+        interest = self.interest_amount or Decimal('0')
+        principal = self.principal_amount or Decimal('0')
+
+        if principal == 0:
+            principal = self.amount - interest
+
+        if principal < 0:
+            raise ValidationError("Interest amount cannot exceed total repayment")
+
+        total_components = (principal + interest).quantize(Decimal('0.01'))
+        if total_components != self.amount.quantize(Decimal('0.01')):
+            raise ValidationError("Principal and interest must sum to the total repayment amount")
+
+        self.principal_amount = principal
+        self.interest_amount = interest
+
         super().save(*args, **kwargs)
 
         if is_new:
-            # Create corresponding income transaction
-            self.transaction = PersonalTransaction.objects.create(
-                user=self.loan.user,
-                type=TransactionType.INCOME,
-                amount=self.amount,
-                account=self.account,
-                income_source=PersonalIncomeSource.LOAN_REPAYMENT,
-                description=f"Loan repayment from {self.loan.borrower_name}",
-                reason=f"Repayment for loan: {self.loan.description}",
-                date=timezone.now(),
-                notes=self.notes
-            )
-            self.save(update_fields=['transaction'])
+            repayment_dt = datetime.combine(self.repayment_date, time.min)
+            if timezone.is_naive(repayment_dt):
+                repayment_dt = timezone.make_aware(repayment_dt)
+
+            principal_tx = None
+            if principal > 0:
+                principal_tx = PersonalTransaction.objects.create(
+                    user=self.loan.user,
+                    type=TransactionType.INCOME,
+                    amount=principal,
+                    account=self.account,
+                    income_source=PersonalIncomeSource.LOAN_REPAYMENT,
+                    description=f"Loan principal from {self.loan.borrower_name}",
+                    reason=f"Principal repayment for loan: {self.loan.description}",
+                    date=repayment_dt,
+                    notes=self.notes,
+                    affects_profit=False,
+                )
+
+            if interest > 0:
+                PersonalTransaction.objects.create(
+                    user=self.loan.user,
+                    type=TransactionType.INCOME,
+                    amount=interest,
+                    account=self.account,
+                    income_source=PersonalIncomeSource.LOAN_INTEREST,
+                    description=f"Loan interest from {self.loan.borrower_name}",
+                    reason=f"Interest repayment for loan: {self.loan.description}",
+                    date=repayment_dt,
+                    notes=self.notes,
+                    affects_profit=True,
+                )
+
+            if principal_tx:
+                self.transaction = principal_tx
+                super().save(update_fields=['transaction'])
 
     def __str__(self):
         return f"Repayment: {self.amount} from {self.loan.borrower_name}"

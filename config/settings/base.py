@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     'permissions',
     'dashboard',
     'ticketing',
+    'saccos',
+    'businesses',
 ]
 
 MIDDLEWARE = [
@@ -58,6 +60,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'common.middleware.UserTimezoneMiddleware',
+    'saccos.middleware.SaccoTenantMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

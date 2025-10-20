@@ -11,11 +11,13 @@ CORS_ALLOW_ALL_ORIGINS = DEBUG
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:5173",  # Vite dev server
     "https://studio.tamiti.com",
 ]
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3001",
+    "http://localhost:5173",  # Vite dev server
     "https://studio.tamiti.com",
 ]
 

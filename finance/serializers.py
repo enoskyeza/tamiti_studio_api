@@ -1,4 +1,5 @@
 from decimal import Decimal
+import json
 from rest_framework import serializers
 from django.contrib.contenttypes.models import ContentType
 from comments.models import Comment
@@ -9,9 +10,10 @@ from finance.models import (
     Quotation, Receipt, InvoiceItem, QuotationItem, ReceiptItem
 )
 from common.enums import PartyType
-from finance.services import FinanceService
+from finance.services import FinanceService, PersonalFinanceService
 from users.models import User
 from django.contrib.auth import get_user_model
+from django.db import transaction as db_transaction
 from .models import (
     PersonalTransaction, PersonalBudget, PersonalSavingsGoal, PersonalTransactionRecurring,
     PersonalAccountTransfer, PersonalDebt, PersonalLoan, DebtPayment, LoanRepayment,
@@ -376,16 +378,134 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class QuotationItemSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = QuotationItem
+        fields = '__all__'
+
+
+class QuotationItemInputSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    description = serializers.CharField(required=False, allow_blank=True, default='')
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2)
+    unit_cost = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
 class QuotationSerializer(serializers.ModelSerializer):
     party_name = serializers.CharField(source='party.name', read_only=True)
-    items = serializers.SerializerMethodField()
+    items = QuotationItemSerializer(many=True, read_only=True)
 
     class Meta:
         model = Quotation
         fields = '__all__'
+        read_only_fields = ['total_amount']
 
-    def get_items(self, obj):
-        return QuotationItemSerializer(obj.items.all(), many=True).data
+    def _extract_raw_items(self, *, required: bool) -> list | None:
+        sentinel = object()
+        raw_items = self.initial_data.get('items', sentinel)
+        if raw_items is sentinel:
+            raw_items = self.initial_data.get('items_payload', sentinel)
+
+        if raw_items is sentinel:
+            if required:
+                raise serializers.ValidationError({'items': 'This field is required.'})
+            return None
+
+        if isinstance(raw_items, str):
+            raw_items = raw_items.strip()
+            if not raw_items:
+                if required:
+                    raise serializers.ValidationError({'items': 'At least one item is required.'})
+                return []
+            try:
+                raw_items = json.loads(raw_items)
+            except json.JSONDecodeError as exc:
+                raise serializers.ValidationError({'items': 'Items payload must be valid JSON.'}) from exc
+
+        if not isinstance(raw_items, list):
+            raise serializers.ValidationError({'items': 'Items must be provided as a list.'})
+
+        return raw_items
+
+    def _normalize_items(self, items: list, *, allow_empty: bool) -> list | None:
+        if items is None:
+            return None
+        if not items and not allow_empty:
+            raise serializers.ValidationError({'items': 'At least one item is required.'})
+
+        cleaned_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise serializers.ValidationError({'items': 'Each item must be an object.'})
+            description = item.get('description', '')
+            if description is None:
+                description = ''
+            cleaned_items.append({
+                'name': item.get('name'),
+                'description': description,
+                'quantity': item.get('quantity'),
+                'unit_cost': item.get('unit_cost'),
+            })
+
+        item_serializer = QuotationItemInputSerializer(data=cleaned_items, many=True)
+        item_serializer.is_valid(raise_exception=True)
+        return item_serializer.validated_data
+
+    def _calculate_total(self, items: list) -> Decimal:
+        total = Decimal('0')
+        for item in items:
+            total += item['quantity'] * item['unit_cost']
+        return total
+
+    def create(self, validated_data):
+        raw_items = self._extract_raw_items(required=True)
+        validated_items = self._normalize_items(raw_items, allow_empty=False)
+        total_amount = self._calculate_total(validated_items)
+        validated_data['total_amount'] = total_amount
+
+        with db_transaction.atomic():
+            quotation = Quotation.objects.create(**validated_data)
+            for item in validated_items:
+                QuotationItem.objects.create(
+                    quotation=quotation,
+                    name=item['name'],
+                    description=item.get('description', ''),
+                    quantity=item['quantity'],
+                    unit_cost=item['unit_cost'],
+                )
+        quotation.refresh_from_db()
+        return quotation
+
+    def update(self, instance, validated_data):
+        raw_items = self._extract_raw_items(required=False)
+        items_to_apply = self._normalize_items(raw_items, allow_empty=False) if raw_items is not None else None
+
+        with db_transaction.atomic():
+            update_fields = set()
+            for attr, value in validated_data.items():
+                setattr(instance, attr, value)
+                update_fields.add(attr)
+
+            if items_to_apply is not None:
+                instance.items.all().delete()
+                instance.total_amount = self._calculate_total(items_to_apply)
+                update_fields.add('total_amount')
+
+            if update_fields:
+                instance.save(update_fields=list(update_fields))
+
+            if items_to_apply is not None:
+                for item in items_to_apply:
+                    QuotationItem.objects.create(
+                        quotation=instance,
+                        name=item['name'],
+                        description=item.get('description', ''),
+                        quantity=item['quantity'],
+                        unit_cost=item['unit_cost'],
+                    )
+
+        instance.refresh_from_db()
+        return instance
 
 
 class ReceiptSerializer(serializers.ModelSerializer):
@@ -404,13 +524,7 @@ class ReceiptSerializer(serializers.ModelSerializer):
 class InvoiceItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceItem
-        fields = '__all__'
-
-
-class QuotationItemSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = QuotationItem
-        fields = '__all__'
+        fields = ['id', 'invoice', 'name', 'description', 'quantity', 'unit_cost', 'amount']
 
 
 class ReceiptItemSerializer(serializers.ModelSerializer):
@@ -433,27 +547,129 @@ class PartyWriteField(serializers.PrimaryKeyRelatedField):
 
 
 class InvoiceListSerializer(serializers.ModelSerializer):
+    party_name = serializers.CharField(source='party.name', read_only=True)
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    
     class Meta:
         model = Invoice
         fields = ['id', 'number', 'direction', 'issue_date', 'due_date', 'currency',
-                  'total', 'paid_amount', 'amount_due', 'party', 'document']
+                  'total', 'paid_amount', 'amount_due', 'party', 'party_name', 'document']
+
+
+class InvoiceDetailSerializer(serializers.ModelSerializer):
+    party = PartyInlineSerializer(read_only=True)
+    items = InvoiceItemSerializer(many=True, read_only=True)
+    payments = PaymentBriefSerializer(many=True, read_only=True)
+    paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    amount_due = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    
+    class Meta:
+        model = Invoice
+        fields = ['id', 'number', 'direction', 'issue_date', 'due_date', 'currency',
+                  'subtotal', 'tax', 'discount', 'total', 'paid_amount', 'amount_due',
+                  'party', 'items', 'payments', 'document', 'created_at', 'updated_at']
 
 
 class InvoiceItemWriteSerializer(serializers.ModelSerializer):
     class Meta:
         model = InvoiceItem
         fields = ('name', 'description', 'quantity', 'unit_cost')
+    
+    def to_internal_value(self, data):
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"[ITEM SERIALIZER] Validating item: {data}")
+        
+        try:
+            result = super().to_internal_value(data)
+            logger.info(f"[ITEM SERIALIZER] Item validated successfully: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[ITEM SERIALIZER] Item validation failed: {e}")
+            logger.error(f"[ITEM SERIALIZER] Item data: {data}")
+            raise
 
 
 class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
     party = PartyWriteField(queryset=Party.objects.all())
     items = InvoiceItemWriteSerializer(many=True, required=False)
+    
     class Meta:
         model = Invoice
         fields = ['number', 'direction', 'issue_date', 'due_date', 'currency',
                   'subtotal', 'tax', 'discount', 'total', 'party', 'document', 'items']
+    
+    def to_internal_value(self, data):
+        """Parse JSON strings from FormData for nested fields"""
+        import json
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Convert QueryDict to regular dict for proper manipulation
+        if hasattr(data, 'dict'):
+            data = data.dict()
+        else:
+            data = dict(data)
+        
+        logger.info(f"[INVOICE SERIALIZER] Data type after conversion: {type(data)}")
+        
+        # Parse items JSON string
+        items_raw = data.get('items')
+        logger.info(f"[INVOICE SERIALIZER] Items received - Type: {type(items_raw)}, Value: {items_raw}")
+        
+        if isinstance(items_raw, str):
+            try:
+                data['items'] = json.loads(items_raw)
+                logger.info(f"[INVOICE SERIALIZER] Items parsed - Count: {len(data['items']) if isinstance(data['items'], list) else 'N/A'}")
+                logger.info(f"[INVOICE SERIALIZER] Parsed items data: {data['items']}")
+            except (json.JSONDecodeError, ValueError, AttributeError) as e:
+                logger.error(f"[INVOICE SERIALIZER] Failed to parse items JSON: {e}")
+                pass
+        
+        # Parse party JSON string (for creating new party inline)
+        if isinstance(data.get('party'), str):
+            try:
+                party_data = json.loads(data['party'])
+                if isinstance(party_data, dict):
+                    data['party'] = party_data
+            except (json.JSONDecodeError, ValueError, AttributeError):
+                pass
+        
+        logger.info(f"[INVOICE SERIALIZER] Data before super call - Keys: {data.keys()}")
+        logger.info(f"[INVOICE SERIALIZER] Items in data before super: {'items' in data}")
+        
+        try:
+            result = super().to_internal_value(data)
+            logger.info(f"[INVOICE SERIALIZER] After validation - Items in validated_data: {len(result.get('items', [])) if 'items' in result else 'None'}")
+            if 'items' in result:
+                logger.info(f"[INVOICE SERIALIZER] Validated items: {result['items']}")
+            return result
+        except Exception as e:
+            logger.error(f"[INVOICE SERIALIZER] Validation error: {e}")
+            logger.error(f"[INVOICE SERIALIZER] Validation errors: {getattr(self, 'errors', 'No errors attribute')}")
+            raise
+    
+    def validate(self, attrs):
+        """Explicitly validate items to catch any validation errors"""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"[INVOICE VALIDATE] Attrs received: {attrs.keys()}")
+        logger.info(f"[INVOICE VALIDATE] Items in attrs: {'items' in attrs}")
+        
+        if 'items' in attrs:
+            items = attrs['items']
+            logger.info(f"[INVOICE VALIDATE] Items count: {len(items)}")
+            logger.info(f"[INVOICE VALIDATE] Items data: {items}")
+        else:
+            logger.warning(f"[INVOICE VALIDATE] No items in attrs!")
+        
+        return attrs
+    
+    def to_representation(self, instance):
+        """Return full details after create/update"""
+        return InvoiceDetailSerializer(instance, context=self.context).data
 
     def create(self, validated_data):
         items = validated_data.pop('items', None)
@@ -465,18 +681,41 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
         else:
             if invoice.total is None:
                 raise serializers.ValidationError({'total': 'Total is required when no items are provided'})
+        
+        # Refresh to get related data for response
+        invoice.refresh_from_db()
         return invoice
 
     def update(self, instance, validated_data):
+        import logging
+        logger = logging.getLogger(__name__)
+        
         items = validated_data.pop('items', None)
+        logger.info(f"[INVOICE UPDATE] Updating invoice {instance.id} - Items: {items}")
+        logger.info(f"[INVOICE UPDATE] Items type: {type(items)}, Items is None: {items is None}, Items count: {len(items) if items else 0}")
+        
         for attr, val in validated_data.items():
             setattr(instance, attr, val)
         instance.save()
+        
         if items is not None:
-            instance.items.all().delete()
+            deleted_count = instance.items.all().delete()[0]
+            logger.info(f"[INVOICE UPDATE] Deleted {deleted_count} existing items")
+            
+            created_count = 0
             for it in items:
+                logger.info(f"[INVOICE UPDATE] Creating item: {it}")
                 InvoiceItem.objects.create(invoice=instance, **it)
+                created_count += 1
+            
+            logger.info(f"[INVOICE UPDATE] Created {created_count} new items")
             instance.update_total()
+        else:
+            logger.warning(f"[INVOICE UPDATE] No items provided - items field is None")
+        
+        # Refresh to get related data for response
+        instance.refresh_from_db()
+        logger.info(f"[INVOICE UPDATE] Final item count: {instance.items.count()}")
         return instance
 
 
@@ -574,6 +813,8 @@ class PersonalTransactionListSerializer(serializers.ModelSerializer):
             'income_source', 'income_source_display', 'expense_category',
             'expense_category_display', 'reason', 'date', 'formatted_date',
             'reference_number', 'receipt_image', 'tags', 'location', 'notes',
+            'linked_invoice', 'linked_goal', 'linked_budget',
+            'goal_applied_amount', 'goal_applied_direction',
             'is_recurring', 'created_at'
         ]
 
@@ -603,13 +844,23 @@ class PersonalTransactionCreateSerializer(serializers.ModelSerializer):
     account = serializers.PrimaryKeyRelatedField(
         queryset=Account.objects.filter(scope=FinanceScope.PERSONAL)
     )
+    linked_invoice = serializers.PrimaryKeyRelatedField(
+        queryset=Invoice.objects.all(), required=False, allow_null=True
+    )
+    linked_goal = serializers.PrimaryKeyRelatedField(
+        queryset=PersonalSavingsGoal.objects.all(), required=False, allow_null=True
+    )
+    linked_budget = serializers.PrimaryKeyRelatedField(
+        queryset=PersonalBudget.objects.all(), required=False, allow_null=True
+    )
 
     class Meta:
         model = PersonalTransaction
         fields = [
             'type', 'amount', 'account', 'description', 'transaction_charge',
             'income_source', 'expense_category', 'reason', 'date',
-            'reference_number', 'receipt_image', 'tags', 'location', 'notes'
+            'reference_number', 'receipt_image', 'tags', 'location', 'notes',
+            'linked_invoice', 'linked_goal', 'linked_budget'
         ]
 
     def validate_account(self, value):
@@ -631,20 +882,57 @@ class PersonalTransactionCreateSerializer(serializers.ModelSerializer):
 
         return data
 
+    def validate_linked_goal(self, value):
+        user = self.context['request'].user
+        if value and value.user != user:
+            raise serializers.ValidationError('Goal must belong to the current user')
+        return value
+
+    def validate_linked_budget(self, value):
+        user = self.context['request'].user
+        if value and value.user != user:
+            raise serializers.ValidationError('Budget must belong to the current user')
+        return value
+
     def create(self, validated_data):
-        validated_data['user'] = self.context['request'].user
-        return super().create(validated_data)
+        user = self.context['request'].user
+        return PersonalFinanceService.create_personal_transaction(user, validated_data)
 
 
 class PersonalTransactionUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating personal transactions"""
+    linked_invoice = serializers.PrimaryKeyRelatedField(
+        queryset=Invoice.objects.all(), required=False, allow_null=True
+    )
+    linked_goal = serializers.PrimaryKeyRelatedField(
+        queryset=PersonalSavingsGoal.objects.all(), required=False, allow_null=True
+    )
+    linked_budget = serializers.PrimaryKeyRelatedField(
+        queryset=PersonalBudget.objects.all(), required=False, allow_null=True
+    )
 
     class Meta:
         model = PersonalTransaction
         fields = [
             'description', 'transaction_charge', 'reason', 'reference_number',
-            'receipt_image', 'tags', 'location', 'notes'
+            'receipt_image', 'tags', 'location', 'notes',
+            'linked_invoice', 'linked_goal', 'linked_budget'
         ]
+
+    def validate_linked_goal(self, value):
+        user = self.context['request'].user
+        if value and value.user != user:
+            raise serializers.ValidationError('Goal must belong to the current user')
+        return value
+
+    def validate_linked_budget(self, value):
+        user = self.context['request'].user
+        if value and value.user != user:
+            raise serializers.ValidationError('Budget must belong to the current user')
+        return value
+
+    def update(self, instance, validated_data):
+        return PersonalFinanceService.update_personal_transaction(instance, validated_data)
 
 
 class PersonalBudgetListSerializer(serializers.ModelSerializer):
@@ -920,7 +1208,7 @@ class PersonalAccountTransferListSerializer(serializers.ModelSerializer):
         model = PersonalAccountTransfer
         fields = [
             'id', 'from_account', 'from_account_name', 'to_account', 'to_account_name',
-            'amount', 'transfer_fee', 'total_debit_amount', 'exchange_rate',
+            'amount', 'received_amount', 'transfer_fee', 'total_debit_amount', 'exchange_rate',
             'description', 'reference_number', 'date', 'created_at'
         ]
 
@@ -936,9 +1224,18 @@ class PersonalAccountTransferCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
+        if data['amount'] <= 0:
+            raise serializers.ValidationError({"amount": "Transfer amount must be greater than zero"})
+
+        if data.get('transfer_fee', 0) < 0:
+            raise serializers.ValidationError({"transfer_fee": "Transfer fee cannot be negative"})
+
+        if data.get('exchange_rate', 1) <= 0:
+            raise serializers.ValidationError({"exchange_rate": "Exchange rate must be greater than zero"})
+
         if data['from_account'] == data['to_account']:
             raise serializers.ValidationError("Cannot transfer to the same account")
-        
+
         # Validate account ownership
         user = self.context['request'].user
         if (data['from_account'].owner != user or 
@@ -1058,7 +1355,8 @@ class DebtPaymentListSerializer(serializers.ModelSerializer):
         model = DebtPayment
         fields = [
             'id', 'debt', 'debt_creditor', 'amount', 'payment_date',
-            'account', 'account_name', 'notes', 'created_at'
+            'account', 'account_name', 'principal_amount', 'interest_amount',
+            'notes', 'created_at'
         ]
 
 
@@ -1067,10 +1365,17 @@ class DebtPaymentCreateSerializer(serializers.ModelSerializer):
     account = serializers.PrimaryKeyRelatedField(
         queryset=Account.objects.filter(scope=FinanceScope.PERSONAL)
     )
-    
+    interest_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        min_value=0,
+        default=Decimal('0')
+    )
+
     class Meta:
         model = DebtPayment
-        fields = ['amount', 'account', 'payment_date', 'notes']
+        fields = ['amount', 'interest_amount', 'account', 'payment_date', 'notes']
 
     def validate_account(self, value):
         user = self.context['request'].user
@@ -1094,7 +1399,8 @@ class LoanRepaymentListSerializer(serializers.ModelSerializer):
         model = LoanRepayment
         fields = [
             'id', 'loan', 'loan_borrower', 'amount', 'repayment_date',
-            'account', 'account_name', 'notes', 'created_at'
+            'account', 'account_name', 'principal_amount', 'interest_amount',
+            'notes', 'created_at'
         ]
 
 
@@ -1103,10 +1409,17 @@ class LoanRepaymentCreateSerializer(serializers.ModelSerializer):
     account = serializers.PrimaryKeyRelatedField(
         queryset=Account.objects.filter(scope=FinanceScope.PERSONAL)
     )
-    
+    interest_amount = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        required=False,
+        min_value=0,
+        default=Decimal('0')
+    )
+
     class Meta:
         model = LoanRepayment
-        fields = ['amount', 'account', 'repayment_date', 'notes']
+        fields = ['amount', 'interest_amount', 'account', 'repayment_date', 'notes']
 
     def validate_account(self, value):
         user = self.context['request'].user
@@ -1132,6 +1445,17 @@ class DebtSummarySerializer(serializers.Serializer):
     overdue_loans_count = serializers.IntegerField()
     overdue_debts = PersonalDebtListSerializer(many=True)
     overdue_loans = PersonalLoanListSerializer(many=True)
+
+
+class InterestSummarySerializer(serializers.Serializer):
+    """Serializer for personal interest payments and receipts"""
+    total_interest_paid = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total_interest_received = serializers.DecimalField(max_digits=12, decimal_places=2)
+    net_interest = serializers.DecimalField(max_digits=12, decimal_places=2)
+    interest_paid_transactions = serializers.IntegerField()
+    interest_received_transactions = serializers.IntegerField()
+    start_date = serializers.DateField(allow_null=True, required=False)
+    end_date = serializers.DateField(allow_null=True, required=False)
 
 
 # COMPANY FINANCE SERIALIZERS
