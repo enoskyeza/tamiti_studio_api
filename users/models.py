@@ -28,8 +28,11 @@ class User(AbstractUser):
         ADMIN = 'Admin'
         STAFF = 'Staff'
         CUSTOMER = 'Customer'
+        SACCO_ADMIN = 'Sacco Admin'
+        SACCO_MEMBER = 'Sacco Member'
+        SACCO_SECRETARY = 'Sacco Secretary'
 
-    role = models.CharField(max_length=20, choices=Role.choices, default=Role.STAFF)
+    role = models.CharField(max_length=30, choices=Role.choices, default=Role.STAFF)
 
     REQUIRED_FIELDS = []  # Remove required fields for temporary users
     USERNAME_FIELD = 'username'
@@ -114,6 +117,12 @@ class User(AbstractUser):
         )
         
         return user, password  # Return password for initial setup
+    
+    def get_sacco(self):
+        """Get user's SACCO if they are a member"""
+        if hasattr(self, 'sacco_membership'):
+            return self.sacco_membership.sacco
+        return None
 
 
 class UserPreferences(BaseModel):

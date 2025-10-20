@@ -1,3 +1,4 @@
+from datetime import date as date_cls, datetime as datetime_cls
 from decimal import Decimal
 from django.core.exceptions import ValidationError
 from django.db import transaction as db_transaction
@@ -5,7 +6,9 @@ from django.utils import timezone
 from django.db import models
 
 from finance.models import Payment, Transaction, Invoice
-from common.enums import TransactionType, PaymentMethod, InvoiceDirection
+from common.enums import TransactionType, PaymentMethod, InvoiceDirection, PaymentCategory
+
+LINK_UNSET = object()
 
 
 class FinanceService:
@@ -29,16 +32,33 @@ class FinanceService:
             method=method or PaymentMethod.CASH,
         )
 
+        payment_date = timezone.localdate()
+        if date is not None:
+            if isinstance(date, datetime_cls):
+                payment_date = date.date()
+            elif isinstance(date, date_cls):
+                payment_date = date
+            elif isinstance(date, str):
+                try:
+                    payment_date = datetime_cls.fromisoformat(date).date()
+                except ValueError:
+                    payment_date = timezone.localdate()
+
+        invoice_reference = invoice.number or f"#{invoice.id}"
+        payment_description = notes or f"Payment for invoice {invoice_reference}"
+
         # Map invoice direction to transaction type
         # Paying INCOMING invoice => EXPENSE; Paying OUTGOING invoice => INCOME
         tx_type = TransactionType.EXPENSE if invoice.direction == InvoiceDirection.INCOMING else TransactionType.INCOME
         tx = Transaction.objects.create(
             type=tx_type,
             amount=amount,
-            description=notes or f"Payment for invoice {invoice.number}",
+            description=payment_description,
             account=account,
+            category=PaymentCategory.INVOICE,
             related_invoice=invoice,
             related_payment=payment,
+            date=payment_date,
             is_automated=True,
         )
         payment.transaction = tx
@@ -58,14 +78,23 @@ class PersonalFinanceService:
         from common.enums import FinanceScope, TransactionType
         from decimal import Decimal
 
-        # Validate account ownership
-        account = Account.objects.get(
-            id=transaction_data['account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
+        account_value = transaction_data.get('account')
+        if isinstance(account_value, Account):
+            account = account_value
+        else:
+            account = Account.objects.get(
+                id=account_value,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
 
         # Create transaction
+        transaction_data = transaction_data.copy()
+        transaction_data.pop('account', None)
+        invoice_obj = transaction_data.pop('linked_invoice', None)
+        goal_obj = transaction_data.pop('linked_goal', None)
+        budget_obj = transaction_data.pop('linked_budget', None)
+
         transaction = PersonalTransaction.objects.create(
             user=user,
             type=transaction_data['type'],
@@ -82,12 +111,23 @@ class PersonalFinanceService:
             tags=transaction_data.get('tags', []),
             location=transaction_data.get('location', ''),
             notes=transaction_data.get('notes', ''),
+            linked_invoice=invoice_obj,
+            linked_goal=goal_obj,
+            linked_budget=budget_obj,
         )
 
         # Update account balance
         PersonalFinanceService.update_account_balance(account, transaction)
 
-        # Update related budgets
+        # Apply linked entities (invoice, goal, budget)
+        PersonalFinanceService.apply_transaction_linkages(
+            transaction,
+            linked_invoice=invoice_obj,
+            linked_goal=goal_obj,
+            linked_budget=budget_obj,
+        )
+
+        # Update related budgets based on category linkage
         PersonalFinanceService.update_budget_spending(user, transaction)
 
         return transaction
@@ -128,7 +168,194 @@ class PersonalFinanceService:
 
         # Update spent amounts (this will trigger the property calculations)
         for budget in budgets:
-            budget.save()  # This triggers recalculation of spent_amount
+            budget.update_spent_amount()
+
+    @staticmethod
+    @db_transaction.atomic
+    def update_personal_transaction(transaction, data):
+        """Update transaction metadata and re-sync linked entities"""
+        update_fields = []
+
+        simple_fields = [
+            'description', 'transaction_charge', 'reason', 'reference_number',
+            'receipt_image', 'tags', 'location', 'notes'
+        ]
+
+        for field in simple_fields:
+            if field in data:
+                setattr(transaction, field, data[field])
+                update_fields.append(field)
+
+        if update_fields:
+            update_fields.append('updated_at')
+            transaction.save(update_fields=update_fields)
+
+        PersonalFinanceService.apply_transaction_linkages(
+            transaction,
+            linked_invoice=data.get('linked_invoice', LINK_UNSET),
+            linked_goal=data.get('linked_goal', LINK_UNSET),
+            linked_budget=data.get('linked_budget', LINK_UNSET),
+        )
+
+        PersonalFinanceService.update_budget_spending(transaction.user, transaction)
+
+        return transaction
+
+    @staticmethod
+    @db_transaction.atomic
+    def apply_transaction_linkages(transaction, linked_invoice=LINK_UNSET, linked_goal=LINK_UNSET, linked_budget=LINK_UNSET):
+        """Synchronize invoice, goal, and budget associations for a transaction"""
+        PersonalFinanceService._handle_invoice_link(transaction, linked_invoice)
+        PersonalFinanceService._handle_goal_link(transaction, linked_goal)
+        PersonalFinanceService._handle_budget_link(transaction, linked_budget)
+
+    @staticmethod
+    def _handle_invoice_link(transaction, new_invoice):
+        from common.enums import InvoiceDirection
+
+        target_invoice = transaction.linked_invoice if new_invoice is LINK_UNSET else new_invoice
+        payment = transaction.invoice_payment
+
+        if new_invoice is not LINK_UNSET and target_invoice != transaction.linked_invoice:
+            if payment:
+                payment.delete()
+                payment = None
+            transaction.linked_invoice = target_invoice
+            transaction.invoice_payment = None
+            transaction.save(update_fields=['linked_invoice', 'invoice_payment', 'updated_at'])
+
+        if target_invoice is None:
+            if payment:
+                payment.delete()
+                transaction.invoice_payment = None
+                transaction.save(update_fields=['invoice_payment', 'updated_at'])
+            return
+
+        applied_amount = transaction.amount
+        if applied_amount <= 0:
+            return
+
+        if target_invoice.direction == InvoiceDirection.INCOMING and transaction.type != TransactionType.EXPENSE:
+            raise ValidationError({'linked_invoice': 'Paying an incoming invoice requires an expense transaction.'})
+        if target_invoice.direction == InvoiceDirection.OUTGOING and transaction.type != TransactionType.INCOME:
+            raise ValidationError({'linked_invoice': 'Receiving payment for an outgoing invoice requires an income transaction.'})
+
+        amount_due = target_invoice.amount_due
+        if applied_amount > amount_due + Decimal('0.01'):
+            raise ValidationError({'linked_invoice': 'Applied amount exceeds the outstanding invoice balance.'})
+
+        payment_direction = 'outgoing' if target_invoice.direction == InvoiceDirection.INCOMING else 'incoming'
+
+        if payment:
+            payment.amount = applied_amount
+            payment.direction = payment_direction
+            payment.account = transaction.account
+            payment.invoice = target_invoice
+            payment.notes = f"Linked from personal transaction #{transaction.id}"
+            payment.save()
+        else:
+            payment = Payment.objects.create(
+                direction=payment_direction,
+                amount=applied_amount,
+                party=target_invoice.party,
+                invoice=target_invoice,
+                account=transaction.account,
+                method=PaymentMethod.CASH,
+                notes=f"Linked from personal transaction #{transaction.id}"
+            )
+            transaction.invoice_payment = payment
+            transaction.save(update_fields=['invoice_payment', 'updated_at'])
+
+    @staticmethod
+    def _handle_goal_link(transaction, new_goal):
+        from finance.models import PersonalSavingsGoal
+
+        target_goal = transaction.linked_goal if new_goal is LINK_UNSET else new_goal
+        previous_goal = transaction.linked_goal
+        previous_amount = transaction.goal_applied_amount or Decimal('0')
+        previous_direction = transaction.goal_applied_direction
+
+        # Reverse previous contribution if goal changed or removed
+        if previous_goal and previous_amount > 0:
+            PersonalFinanceService._adjust_goal_balance(
+                previous_goal,
+                previous_amount,
+                previous_direction,
+                reverse=True
+            )
+            transaction.goal_applied_amount = Decimal('0')
+            transaction.goal_applied_direction = ''
+            if target_goal != previous_goal:
+                transaction.linked_goal = None
+            transaction.save(update_fields=['goal_applied_amount', 'goal_applied_direction', 'linked_goal', 'updated_at'])
+
+        if not target_goal:
+            return
+
+        if not isinstance(target_goal, PersonalSavingsGoal):
+            target_goal = PersonalSavingsGoal.objects.get(id=target_goal)
+
+        if target_goal.user != transaction.user:
+            raise ValidationError({'linked_goal': 'Goal must belong to the current user.'})
+
+        if transaction.type == TransactionType.INCOME:
+            applied_amount = (transaction.amount - transaction.transaction_charge).quantize(Decimal('0.01'))
+            direction = 'deposit'
+        else:
+            applied_amount = (transaction.amount + transaction.transaction_charge).quantize(Decimal('0.01'))
+            direction = 'withdraw'
+
+        if applied_amount <= 0:
+            return
+
+        PersonalFinanceService._adjust_goal_balance(target_goal, applied_amount, direction)
+
+        transaction.goal_applied_amount = applied_amount
+        transaction.goal_applied_direction = direction
+        transaction.linked_goal = target_goal
+        transaction.save(update_fields=['goal_applied_amount', 'goal_applied_direction', 'linked_goal', 'updated_at'])
+
+    @staticmethod
+    def _adjust_goal_balance(goal, amount, direction, reverse=False):
+        if amount <= 0:
+            return
+
+        delta = amount if direction == 'deposit' else -amount
+        if reverse:
+            delta = -delta
+
+        goal.current_amount = max(goal.current_amount + delta, Decimal('0'))
+
+        if goal.current_amount >= goal.target_amount:
+            if not goal.is_achieved:
+                goal.is_achieved = True
+                goal.achieved_date = timezone.now().date()
+        else:
+            goal.is_achieved = False
+            goal.achieved_date = None
+
+        goal.save(update_fields=['current_amount', 'is_achieved', 'achieved_date'])
+
+    @staticmethod
+    def _handle_budget_link(transaction, new_budget):
+        from finance.models import PersonalBudget
+
+        previous_budget = transaction.linked_budget
+        target_budget = previous_budget if new_budget is LINK_UNSET else new_budget
+
+        if new_budget is not LINK_UNSET and target_budget != previous_budget:
+            if target_budget and not isinstance(target_budget, PersonalBudget):
+                target_budget = PersonalBudget.objects.get(id=target_budget)
+            if target_budget and target_budget.user != transaction.user:
+                raise ValidationError({'linked_budget': 'Budget must belong to the current user.'})
+            transaction.linked_budget = target_budget
+            transaction.save(update_fields=['linked_budget', 'updated_at'])
+
+        if previous_budget and previous_budget != target_budget:
+            previous_budget.update_spent_amount()
+
+        if target_budget:
+            target_budget.update_spent_amount()
 
     @staticmethod
     def get_monthly_summary(user, year, month):
@@ -154,8 +381,8 @@ class PersonalFinanceService:
         )
 
         # Calculate totals
-        income_transactions = transactions.filter(type=TransactionType.INCOME)
-        expense_transactions = transactions.filter(type=TransactionType.EXPENSE)
+        income_transactions = transactions.filter(type=TransactionType.INCOME, affects_profit=True)
+        expense_transactions = transactions.filter(type=TransactionType.EXPENSE, affects_profit=True)
 
         total_income = income_transactions.aggregate(
             total=Sum('amount')
@@ -225,8 +452,8 @@ class PersonalFinanceService:
             date__lte=end_date
         )
 
-        income_transactions = transactions.filter(type=TransactionType.INCOME)
-        expense_transactions = transactions.filter(type=TransactionType.EXPENSE)
+        income_transactions = transactions.filter(type=TransactionType.INCOME, affects_profit=True)
+        expense_transactions = transactions.filter(type=TransactionType.EXPENSE, affects_profit=True)
 
         total_income = income_transactions.aggregate(
             total=Sum('amount')
@@ -577,8 +804,23 @@ class PersonalFinanceService:
         if from_account == to_account:
             raise ValidationError("Cannot transfer to the same account")
 
-        amount = Decimal(str(transfer_data['amount']))
-        transfer_fee = Decimal(str(transfer_data.get('transfer_fee', 0)))
+        amount = Decimal(str(transfer_data['amount'])).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise ValidationError({'amount': 'Transfer amount must be greater than zero'})
+
+        transfer_fee = Decimal(str(transfer_data.get('transfer_fee', 0))).quantize(Decimal('0.01'))
+        if transfer_fee < 0:
+            raise ValidationError({'transfer_fee': 'Transfer fee cannot be negative'})
+
+        exchange_rate = Decimal(str(transfer_data.get('exchange_rate', 1)))
+        if exchange_rate <= 0:
+            raise ValidationError({'exchange_rate': 'Exchange rate must be greater than zero'})
+
+        received_amount = (amount * exchange_rate).quantize(Decimal('0.01'))
+        total_debit = amount + transfer_fee
+
+        if from_account.balance < total_debit:
+            raise ValidationError({'amount': 'Insufficient funds to complete transfer including fees'})
 
         # Create the transfer record
         transfer = PersonalAccountTransfer.objects.create(
@@ -586,8 +828,9 @@ class PersonalFinanceService:
             from_account=from_account,
             to_account=to_account,
             amount=amount,
+            received_amount=received_amount,
             transfer_fee=transfer_fee,
-            exchange_rate=Decimal(str(transfer_data.get('exchange_rate', 1))),
+            exchange_rate=exchange_rate,
             description=transfer_data['description'],
             reference_number=transfer_data.get('reference_number', ''),
             date=transfer_data.get('date', timezone.now())
@@ -603,20 +846,22 @@ class PersonalFinanceService:
             description=f"Transfer to {to_account.name}",
             reason=transfer_data['description'],
             date=transfer.date,
-            reference_number=transfer.reference_number
+            reference_number=transfer.reference_number,
+            affects_profit=False,
         )
 
         # Create credit transaction (amount to destination account)
         credit_transaction = PersonalTransaction.objects.create(
             user=user,
             type=TransactionType.INCOME,
-            amount=amount,
+            amount=received_amount,
             account=to_account,
             income_source=PersonalIncomeSource.TRANSFER,
             description=f"Transfer from {from_account.name}",
             reason=transfer_data['description'],
             date=transfer.date,
-            reference_number=transfer.reference_number
+            reference_number=transfer.reference_number,
+            affects_profit=False,
         )
 
         # Create fee transaction if there's a fee
@@ -631,7 +876,8 @@ class PersonalFinanceService:
                 description=f"Transfer fee for {to_account.name}",
                 reason=f"Transfer fee: {transfer_data['description']}",
                 date=transfer.date,
-                reference_number=transfer.reference_number
+                reference_number=transfer.reference_number,
+                affects_profit=True,
             )
 
         # Link transactions to transfer
@@ -701,7 +947,8 @@ class PersonalFinanceService:
             expense_category=PersonalExpenseCategory.LOAN_GIVEN,
             description=f"Loan given to {loan.borrower_name}",
             reason=loan.description or f"Personal loan to {loan.borrower_name}",
-            date=loan.loan_date
+            date=loan.loan_date,
+            affects_profit=False,
         )
 
         return loan
@@ -720,17 +967,32 @@ class PersonalFinanceService:
             owner=user
         )
 
-        amount = Decimal(str(payment_data['amount']))
+        amount = Decimal(str(payment_data['amount'])).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise ValidationError({'amount': 'Payment amount must be greater than zero'})
 
-        if amount > debt.remaining_balance:
-            raise ValidationError("Payment amount cannot exceed remaining debt balance")
+        interest_amount = Decimal(str(payment_data.get('interest_amount', 0))).quantize(Decimal('0.01'))
+        if interest_amount < 0:
+            raise ValidationError({'interest_amount': 'Interest amount cannot be negative'})
+
+        principal_amount = amount - interest_amount
+        if principal_amount < 0:
+            raise ValidationError({'interest_amount': 'Interest cannot exceed total payment'})
+
+        if principal_amount > debt.remaining_balance:
+            raise ValidationError({'amount': 'Principal component exceeds remaining debt balance'})
+
+        if principal_amount == 0 and interest_amount == 0:
+            raise ValidationError({'amount': 'Payment must include either principal or interest'})
 
         payment = DebtPayment.objects.create(
             debt=debt,
             amount=amount,
             account=account,
             payment_date=payment_data.get('payment_date', timezone.now().date()),
-            notes=payment_data.get('notes', '')
+            notes=payment_data.get('notes', ''),
+            principal_amount=principal_amount,
+            interest_amount=interest_amount,
         )
 
         # Check if debt is fully paid and update status
@@ -756,17 +1018,32 @@ class PersonalFinanceService:
             owner=user
         )
 
-        amount = Decimal(str(repayment_data['amount']))
+        amount = Decimal(str(repayment_data['amount'])).quantize(Decimal('0.01'))
+        if amount <= 0:
+            raise ValidationError({'amount': 'Repayment amount must be greater than zero'})
 
-        if amount > loan.remaining_balance:
-            raise ValidationError("Repayment amount cannot exceed remaining loan balance")
+        interest_amount = Decimal(str(repayment_data.get('interest_amount', 0))).quantize(Decimal('0.01'))
+        if interest_amount < 0:
+            raise ValidationError({'interest_amount': 'Interest amount cannot be negative'})
+
+        principal_amount = amount - interest_amount
+        if principal_amount < 0:
+            raise ValidationError({'interest_amount': 'Interest cannot exceed total repayment'})
+
+        if principal_amount > loan.remaining_balance:
+            raise ValidationError({'amount': 'Principal component exceeds remaining loan balance'})
+
+        if principal_amount == 0 and interest_amount == 0:
+            raise ValidationError({'amount': 'Repayment must include either principal or interest'})
 
         repayment = LoanRepayment.objects.create(
             loan=loan,
             amount=amount,
             account=account,
             repayment_date=repayment_data.get('repayment_date', timezone.now().date()),
-            notes=repayment_data.get('notes', '')
+            notes=repayment_data.get('notes', ''),
+            principal_amount=principal_amount,
+            interest_amount=interest_amount,
         )
 
         # Check if loan is fully repaid and update status
@@ -805,4 +1082,41 @@ class PersonalFinanceService:
             'overdue_loans_count': len(overdue_loans),
             'overdue_debts': overdue_debts,
             'overdue_loans': overdue_loans
+        }
+
+    @staticmethod
+    def get_interest_summary(user, start_date=None, end_date=None):
+        """Aggregate interest paid and received within an optional date range"""
+        from finance.models import PersonalTransaction
+        from django.db.models import Sum
+        from decimal import Decimal
+        from common.enums import PersonalExpenseCategory, PersonalIncomeSource, TransactionType
+
+        transactions = PersonalTransaction.objects.filter(user=user, affects_profit=True)
+
+        if start_date:
+            transactions = transactions.filter(date__date__gte=start_date)
+        if end_date:
+            transactions = transactions.filter(date__date__lte=end_date)
+
+        interest_paid_qs = transactions.filter(
+            type=TransactionType.EXPENSE,
+            expense_category=PersonalExpenseCategory.DEBT_INTEREST,
+        )
+        interest_received_qs = transactions.filter(
+            type=TransactionType.INCOME,
+            income_source=PersonalIncomeSource.LOAN_INTEREST,
+        )
+
+        total_interest_paid = interest_paid_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        total_interest_received = interest_received_qs.aggregate(total=Sum('amount'))['total'] or Decimal('0')
+
+        return {
+            'total_interest_paid': total_interest_paid,
+            'total_interest_received': total_interest_received,
+            'net_interest': total_interest_received - total_interest_paid,
+            'interest_paid_transactions': interest_paid_qs.count(),
+            'interest_received_transactions': interest_received_qs.count(),
+            'start_date': start_date,
+            'end_date': end_date,
         }

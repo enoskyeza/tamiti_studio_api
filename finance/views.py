@@ -118,7 +118,7 @@ class AccountViewSet(BaseModelViewSet):
 
 
 class InvoiceViewSet(BaseModelViewSet):
-    queryset = Invoice.objects.all().select_related('party')
+    queryset = Invoice.objects.all().select_related('party').prefetch_related('items', 'payments')
     filterset_fields = ['direction', 'party', 'issue_date', 'due_date', 'number']
     search_fields = ['number', 'party__name']
     parser_classes = (MultiPartParser, FormParser, JSONParser)
@@ -126,6 +126,8 @@ class InvoiceViewSet(BaseModelViewSet):
     def get_serializer_class(self):
         if self.action in ('create', 'update', 'partial_update'):
             return InvoiceCreateUpdateSerializer
+        elif self.action == 'retrieve':
+            return InvoiceDetailSerializer
         return InvoiceListSerializer
 
     @action(detail=True, methods=['post'])
@@ -306,7 +308,7 @@ class TransactionViewSet(BaseModelViewSet):
         # Filter transactions by accessible accounts
         return Transaction.objects.select_related('account').filter(
             account_id__in=accessible_account_ids
-        ).order_by('-date')
+        ).order_by('-date', '-created_at', '-id')
 
 
 class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
@@ -324,7 +326,7 @@ class PaymentViewSet(viewsets.ReadOnlyModelViewSet):
 
 
 class QuotationViewSet(BaseModelViewSet):
-    queryset = Quotation.objects.select_related('party')
+    queryset = Quotation.objects.select_related('party').order_by('-created_at', '-id')
     serializer_class = QuotationSerializer
 
     @action(detail=True, methods=['post'])
@@ -543,7 +545,7 @@ class PersonalTransactionViewSet(BaseModelViewSet):
     """ViewSet for personal transactions with analytics actions"""
     serializer_class = PersonalTransactionListSerializer
     search_fields = ['description', 'reason', 'reference_number', 'location']
-    filterset_fields = ['type', 'account', 'income_source', 'expense_category', 'date', 'is_recurring']
+    filterset_fields = ['type', 'account', 'income_source', 'expense_category', 'date', 'is_recurring', 'linked_invoice', 'linked_goal', 'linked_budget']
     ordering = ['-date']
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     
@@ -555,8 +557,10 @@ class PersonalTransactionViewSet(BaseModelViewSet):
     def get_serializer_class(self):
         if self.action == 'retrieve':
             return PersonalTransactionDetailSerializer
-        elif self.action in ('create', 'update', 'partial_update'):
+        elif self.action == 'create':
             return PersonalTransactionCreateSerializer
+        elif self.action in ('update', 'partial_update'):
+            return PersonalTransactionUpdateSerializer
         return PersonalTransactionListSerializer
 
     def perform_create(self, serializer):
@@ -1082,6 +1086,33 @@ class DebtSummaryAPIView(APIView):
         from finance.services import PersonalFinanceService
         summary = PersonalFinanceService.get_debt_summary(request.user)
         serializer = DebtSummarySerializer(summary)
+        return Response(serializer.data)
+
+
+class InterestSummaryAPIView(APIView):
+    """Expose aggregated interest paid and received for personal finance"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from finance.services import PersonalFinanceService
+
+        start_param = request.query_params.get('start_date')
+        end_param = request.query_params.get('end_date')
+        start_date = end_date = None
+
+        try:
+            if start_param:
+                start_date = datetime.strptime(start_param, '%Y-%m-%d').date()
+            if end_param:
+                end_date = datetime.strptime(end_param, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'detail': 'Dates must be provided in YYYY-MM-DD format.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if start_date and end_date and start_date > end_date:
+            return Response({'detail': 'start_date cannot be after end_date.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        summary = PersonalFinanceService.get_interest_summary(request.user, start_date, end_date)
+        serializer = InterestSummarySerializer(summary)
         return Response(serializer.data)
 
 

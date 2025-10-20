@@ -58,17 +58,19 @@ class TransactionAdmin(admin.ModelAdmin):
 class PersonalTransactionAdmin(admin.ModelAdmin):
     list_display = (
         'id', 'user', 'type', 'amount', 'account', 'description_short',
-        'expense_category', 'income_source', 'date', 'is_recurring'
+        'expense_category', 'income_source', 'linked_invoice', 'linked_goal',
+        'linked_budget', 'date', 'is_recurring'
     )
     list_filter = (
         'type', 'expense_category', 'income_source', 'is_recurring',
-        'date', 'account__type'
+        'date', 'account__type', 'linked_invoice', 'linked_goal', 'linked_budget'
     )
     search_fields = (
         'description', 'reason', 'reference_number', 'location',
         'user__username', 'account__name'
     )
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at', 'goal_applied_amount', 'goal_applied_direction')
+    autocomplete_fields = ('account', 'linked_invoice', 'linked_goal', 'linked_budget')
     date_hierarchy = 'date'
 
     def description_short(self, obj):

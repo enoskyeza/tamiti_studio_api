@@ -67,7 +67,14 @@ class PaymentCategory(BaseEnum):
     UTILITIES = 'utilities', 'Utilities'
     OFFICE = 'office', 'Office Supplies'
     TAX = 'tax', 'Tax'
+    INVOICE = 'invoice', 'Invoice Payment'
     MISC = 'miscellaneous', 'Miscellaneous'
+    SACCO_SAVINGS = 'sacco_savings', 'SACCO Savings'
+    SACCO_LOAN_DISBURSEMENT = 'sacco_loan_disbursement', 'SACCO Loan Disbursement'
+    SACCO_LOAN_REPAYMENT = 'sacco_loan_repayment', 'SACCO Loan Repayment'
+    SACCO_WELFARE = 'sacco_welfare', 'SACCO Welfare'
+    SACCO_DEVELOPMENT = 'sacco_development', 'SACCO Development'
+    SACCO_EMERGENCY = 'sacco_emergency', 'SACCO Emergency Support'
 
 
 class TaskStatus(BaseEnum):
@@ -210,6 +217,7 @@ class PaymentMethod(BaseEnum):
 class FinanceScope(BaseEnum):
     COMPANY = 'company', 'Company'
     PERSONAL = 'personal', 'Personal'
+    SACCO = 'sacco', 'SACCO'
 
 
 class PersonalExpenseCategory(BaseEnum):
@@ -229,7 +237,10 @@ class PersonalExpenseCategory(BaseEnum):
     TRANSFER = 'transfer', 'Account Transfer'
     TRANSFER_FEE = 'transfer_fee', 'Transfer Fee'
     LOAN_GIVEN = 'loan_given', 'Loan Given'
+    DEBT_INTEREST = 'debt_interest', 'Debt Interest'
     OTHER = 'other', 'Other'
+    DONATION = 'donation', 'Donations/Gifts'
+    OWNER_DRAW = 'owner_draw', 'Owner Draw'
 
 
 class PersonalIncomeSource(BaseEnum):
@@ -243,6 +254,10 @@ class PersonalIncomeSource(BaseEnum):
     BONUS = 'bonus', 'Bonus'
     TRANSFER = 'transfer', 'Account Transfer'
     LOAN_REPAYMENT = 'loan_repayment', 'Loan Repayment'
+    LOAN_INTEREST = 'loan_interest', 'Loan Interest'
+    DONATION = 'donation', 'Donation'
+    SPONSORSHIP = 'sponsorship', 'Sponsorship'
+    OWNER_CONTRIBUTION = 'owner_contribution', 'Owner Contribution'
     OTHER = 'other', 'Other'
 
 
