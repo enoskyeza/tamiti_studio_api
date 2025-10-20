@@ -46,6 +46,8 @@ urlpatterns = [
     path('api/planner/', include('planner.urls')),
     path('api/permissions/', include('permissions.urls')),
     path('api/ticketing/', include('ticketing.urls')),
+    path('api/saccos/', include('saccos.urls')),
+    path('api/businesses/', include('businesses.urls')),
 
     # swagger endpoints
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
