@@ -151,6 +151,55 @@ class SaccoMemberViewSet(viewsets.ModelViewSet):
         member = serializer.save()
         PassbookService.create_passbook(member)
     
+    def create(self, request, *args, **kwargs):
+        """
+        Create member with simplified serializer
+        Auto-generates user credentials from first name only
+        """
+        from .serializers_account import SimplifiedMemberCreateSerializer
+        
+        # Get SACCO from nested route or query param
+        sacco_id = kwargs.get('sacco_pk') or request.data.get('sacco')
+        if not sacco_id:
+            return Response(
+                {'error': 'SACCO ID is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            sacco = SaccoOrganization.objects.get(id=sacco_id)
+        except SaccoOrganization.DoesNotExist:
+            return Response(
+                {'error': 'SACCO not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Use simplified serializer
+        serializer = SimplifiedMemberCreateSerializer(
+            data=request.data,
+            context={'sacco': sacco}
+        )
+        
+        if serializer.is_valid():
+            result = serializer.save()
+            member = result['member']
+            user = result['user']
+            
+            # Return member data with generated credentials
+            member_serializer = SaccoMemberListSerializer(member)
+            
+            return Response({
+                'message': 'Member created successfully',
+                'member': member_serializer.data,
+                'credentials': {
+                    'username': result['generated_username'],
+                    'password': result['generated_password'],
+                },
+                'instructions': f"Member can login with username '{result['generated_username']}' and password '{result['generated_password']}'. They should change their password after first login."
+            }, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
     @action(detail=True, methods=['get'])
     def passbook(self, request, pk=None):
         """Get member's passbook"""
@@ -174,6 +223,23 @@ class SaccoMemberViewSet(viewsets.ModelViewSet):
         member.status = 'suspended'
         member.save()
         return Response({'message': 'Member suspended successfully'})
+    
+    @action(detail=False, methods=['get'])
+    def me(self, request, sacco_pk=None):
+        """Get current user's member profile"""
+        try:
+            # Get member for current user and specified SACCO
+            member = SaccoMember.objects.select_related('user', 'sacco').get(
+                user=request.user,
+                sacco_id=sacco_pk
+            )
+            serializer = SaccoMemberListSerializer(member)
+            return Response(serializer.data)
+        except SaccoMember.DoesNotExist:
+            return Response(
+                {'error': 'You are not a member of this SACCO'},
+                status=status.HTTP_404_NOT_FOUND
+            )
 
 
 class MemberPassbookViewSet(viewsets.ReadOnlyModelViewSet):
@@ -257,17 +323,37 @@ class PassbookEntryViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filter entries by passbook or meeting"""
+        """Filter entries by passbook, meeting, section, or member"""
+        queryset = PassbookEntry.objects.all().select_related('passbook', 'section', 'passbook__member')
+        
+        # Filter by passbook
         passbook_id = self.kwargs.get('passbook_pk') or self.request.query_params.get('passbook')
-        meeting_id = self.request.query_params.get('meeting')
-        
         if passbook_id:
-            return PassbookEntry.objects.filter(passbook_id=passbook_id)
+            queryset = queryset.filter(passbook_id=passbook_id)
         
+        # Filter by meeting
+        meeting_id = self.request.query_params.get('meeting')
         if meeting_id:
-            return PassbookEntry.objects.filter(meeting_id=meeting_id)
+            queryset = queryset.filter(meeting_id=meeting_id)
         
-        return PassbookEntry.objects.none()
+        # Filter by section
+        section_id = self.request.query_params.get('section')
+        if section_id:
+            queryset = queryset.filter(section_id=section_id)
+        
+        # Filter by member
+        member_id = self.request.query_params.get('member')
+        if member_id:
+            queryset = queryset.filter(passbook__member_id=member_id)
+        
+        # Order by date descending (most recent first)
+        queryset = queryset.order_by('-transaction_date', '-created_at')
+        
+        # If no filters provided, return empty
+        if not any([passbook_id, meeting_id, section_id, member_id]):
+            return PassbookEntry.objects.none()
+        
+        return queryset
     
     def perform_create(self, serializer):
         """Record entry using PassbookService"""

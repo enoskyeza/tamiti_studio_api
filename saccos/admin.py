@@ -72,6 +72,10 @@ class SaccoMemberAdmin(admin.ModelAdmin):
         ('Next of Kin', {
             'fields': ('next_of_kin_name', 'next_of_kin_phone', 'next_of_kin_relationship')
         }),
+        ('Savings Goal', {
+            'fields': ('savings_goal', 'savings_goal_deadline'),
+            'description': 'Set personal savings targets for the member'
+        }),
         ('Roles', {
             'fields': ('is_secretary', 'is_treasurer', 'is_chairperson')
         }),

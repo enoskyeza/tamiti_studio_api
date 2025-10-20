@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from datetime import timedelta
+from decimal import Decimal
 
 from .models import SaccoOrganization, SaccoMember
 from .services.reporting_service import ReportingService
@@ -219,19 +220,55 @@ def get_dashboard_metrics(request, sacco_id):
     
     metrics = AnalyticsService.get_dashboard_metrics(sacco=sacco)
     
-    # Get account balance from finance module
+    # Get account balance from SACCO account
     account_balance = Decimal('0')
-    if hasattr(sacco, 'finance_account') and sacco.finance_account:
-        account_balance = sacco.finance_account.balance
+    try:
+        if hasattr(sacco, 'sacco_account') and sacco.sacco_account:
+            account_balance = sacco.sacco_account.current_balance
+        else:
+            # Try to get or create the account
+            sacco_account = sacco.get_or_create_account()
+            if sacco_account and hasattr(sacco_account, 'account'):
+                account_balance = sacco_account.account.balance
+    except Exception as e:
+        # Log but don't fail
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Could not get SACCO account balance: {str(e)}")
     
-    # Flatten structure for frontend
-    from saccos.services.meeting_service import MeetingService
-    next_meeting = MeetingService.get_next_meeting(sacco)
-    current_recipient = MeetingService.get_current_recipient(sacco) if next_meeting else None
+    # Get actual member count
+    total_members = SaccoMember.objects.filter(sacco=sacco).count()
+    active_members = SaccoMember.objects.filter(sacco=sacco, status='active').count()
+    
+    # Get next meeting if exists
+    from saccos.models import WeeklyMeeting
+    next_meeting = WeeklyMeeting.objects.filter(
+        sacco=sacco,
+        meeting_date__gte=timezone.now().date(),
+        status='planned'
+    ).order_by('meeting_date').first()
+    
+    # Get current cash round recipient
+    from saccos.models import CashRoundSchedule
+    current_schedule = CashRoundSchedule.objects.filter(
+        sacco=sacco,
+        is_active=True,
+        start_date__lte=timezone.now().date()
+    ).order_by('-start_date').first()
+    
+    current_recipient = None
+    if current_schedule:
+        current_position = current_schedule.current_position or 0
+        if current_position < len(current_schedule.rotation_order):
+            member_id = current_schedule.rotation_order[current_position]
+            try:
+                current_recipient = SaccoMember.objects.get(id=member_id)
+            except SaccoMember.DoesNotExist:
+                pass
     
     flattened = {
-        'total_members': metrics['members']['total'],
-        'active_members': metrics['members']['total'],
+        'total_members': total_members,
+        'active_members': active_members,
         'total_savings': str(metrics['savings']['total']),
         'account_balance': str(account_balance),
         'total_loans': str(metrics['loans'].get('outstanding_amount', 0)),
@@ -242,8 +279,8 @@ def get_dashboard_metrics(request, sacco_id):
         'current_recipient': {
             'id': current_recipient.id,
             'member_number': current_recipient.member_number,
-            'first_name': current_recipient.first_name,
-            'last_name': current_recipient.last_name,
+            'first_name': current_recipient.user.first_name,
+            'last_name': current_recipient.user.last_name,
         } if current_recipient else None,
     }
     

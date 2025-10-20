@@ -117,9 +117,12 @@ class SaccoMemberListSerializer(serializers.ModelSerializer):
             'id', 'member_number', 'first_name', 'last_name', 
             'email', 'phone', 'status', 'date_joined',
             'total_savings', 'total_shares', 'address', 
-            'profile_picture', 'created_at', 'updated_at'
+            'profile_picture', 'savings_goal', 'savings_goal_deadline',
+            'created_at', 'updated_at'
         ]
-        read_only_fields = fields
+        read_only_fields = ['id', 'member_number', 'first_name', 'last_name',
+                           'email', 'phone', 'total_savings', 'total_shares',
+                           'profile_picture', 'created_at', 'updated_at']
     
     def get_profile_picture(self, obj):
         """Get user avatar URL"""
@@ -131,9 +134,35 @@ class SaccoMemberListSerializer(serializers.ModelSerializer):
         return None
     
     def get_total_savings(self, obj):
-        """Calculate total savings from passbook"""
-        # TODO: Calculate from passbook entries
-        return 0
+        """Calculate total savings from passbook sections with type 'savings'"""
+        from decimal import Decimal
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        try:
+            passbook = obj.get_passbook()
+            # Get all balances - now returns {section_id: {section_type, balance, ...}}
+            all_balances = passbook.get_all_balances()
+            
+            logger.info(f"Member {obj.id} - All balances: {all_balances}")
+            
+            total = Decimal('0')
+            for section_id, balance_data in all_balances.items():
+                section_type = balance_data.get('section_type')
+                balance = balance_data.get('balance', 0)
+                logger.info(f"Section {section_id}: type={section_type}, balance={balance}")
+                
+                # Check if this section is a savings type
+                if section_type == 'savings':
+                    total += Decimal(str(balance))
+                    logger.info(f"Added {balance} to total. New total: {total}")
+            
+            logger.info(f"Final total savings for member {obj.id}: {total}")
+            return float(total)
+        except Exception as e:
+            # Log error for debugging
+            logger.error(f"Error calculating total savings for member {obj.id}: {str(e)}", exc_info=True)
+            return 0
     
     def get_total_shares(self, obj):
         """Calculate total shares from passbook"""

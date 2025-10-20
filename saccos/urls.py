@@ -67,6 +67,9 @@ urlpatterns = [
         'get': 'list',
         'post': 'create'
     }), name='sacco-member-list'),
+    path('<int:sacco_pk>/members/me/', SaccoMemberViewSet.as_view({
+        'get': 'me'
+    }), name='sacco-member-me'),
     path('<int:sacco_pk>/members/<int:pk>/', SaccoMemberViewSet.as_view({
         'get': 'retrieve',
         'put': 'update',
