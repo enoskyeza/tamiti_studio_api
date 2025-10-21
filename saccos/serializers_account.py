@@ -17,14 +17,18 @@ class SaccoAccountSerializer(serializers.ModelSerializer):
     """Serializer for SACCO Account"""
     account_details = AccountSerializer(source='account', read_only=True)
     sacco_name = serializers.CharField(source='sacco.name', read_only=True)
+    is_active = serializers.BooleanField(source='account.is_active', read_only=True)
+    balance = serializers.DecimalField(source='account.balance', read_only=True, max_digits=12, decimal_places=2)
     
     class Meta:
         model = SaccoAccount
         fields = [
             'id', 'uuid', 'sacco', 'sacco_name', 'account', 'account_details',
-            'is_active', 'notes', 'created_at', 'updated_at'
+            'bank_name', 'bank_branch', 'account_number',
+            'is_active', 'balance',
+            'created_at', 'updated_at'
         ]
-        read_only_fields = ['uuid', 'created_at', 'updated_at']
+        read_only_fields = ['uuid', 'is_active', 'balance', 'created_at', 'updated_at']
 
 
 class SimplifiedMemberCreateSerializer(serializers.Serializer):
@@ -49,6 +53,7 @@ class SimplifiedMemberCreateSerializer(serializers.Serializer):
     next_of_kin_name = serializers.CharField(max_length=255, required=False, allow_blank=True)
     next_of_kin_phone = serializers.CharField(max_length=15, required=False, allow_blank=True)
     next_of_kin_relationship = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    role = serializers.CharField(max_length=50, required=False, allow_blank=True)
     
     def _generate_username(self, first_name):
         """
@@ -160,6 +165,7 @@ class SimplifiedMemberCreateSerializer(serializers.Serializer):
             next_of_kin_name=validated_data.get('next_of_kin_name') or '',
             next_of_kin_phone=validated_data.get('next_of_kin_phone') or '',
             next_of_kin_relationship=validated_data.get('next_of_kin_relationship') or '',
+            role=validated_data.get('role') or '',
             status='active',
         )
         
