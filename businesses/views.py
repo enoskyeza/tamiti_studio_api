@@ -61,10 +61,40 @@ class SaccoEnterpriseViewSet(viewsets.ModelViewSet):
         
         return SaccoEnterprise.objects.none()
     
+    @action(detail=True, methods=['get', 'patch'])
+    def configuration(self, request, pk=None):
+        """
+        Get or update enterprise configuration.
+        
+        GET /api/businesses/enterprises/{id}/configuration/
+        PATCH /api/businesses/enterprises/{id}/configuration/
+        {
+            "stock_management_enabled": true,
+            "sales_management_enabled": true,
+            "auto_create_finance_entries": true,
+            "sales_affect_stock": true
+        }
+        """
+        enterprise = self.get_object()
+        
+        if request.method == 'GET':
+            serializer = EnterpriseConfigurationSerializer(enterprise.configuration)
+            return Response(serializer.data)
+        
+        elif request.method == 'PATCH':
+            serializer = EnterpriseConfigurationSerializer(
+                enterprise.configuration,
+                data=request.data,
+                partial=True
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save()
+            return Response(serializer.data)
+    
     @action(detail=True, methods=['post'])
     def configure(self, request, pk=None):
         """
-        Update enterprise configuration.
+        Update enterprise configuration (legacy endpoint - use configuration instead).
         
         POST /api/businesses/enterprises/{id}/configure/
         {

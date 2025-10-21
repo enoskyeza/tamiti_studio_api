@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
+from django.contrib.auth import get_user_model
 from .models import (
     SaccoOrganization, SaccoMember, MemberPassbook,
     PassbookSection, PassbookEntry, DeductionRule,
@@ -150,6 +151,46 @@ class SaccoMemberViewSet(viewsets.ModelViewSet):
         """Auto-create passbook when member is created"""
         member = serializer.save()
         PassbookService.create_passbook(member)
+    
+    def update(self, request, *args, **kwargs):
+        """
+        Update member and associated user fields.
+        Handles both SaccoMember fields and User fields.
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        
+        # Use the regular SaccoMemberSerializer for updates (not the read-only list serializer)
+        serializer = SaccoMemberSerializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        
+        # Update SaccoMember fields
+        self.perform_update(serializer)
+        
+        # Update User fields if provided
+        user_fields_to_update = {}
+        if 'first_name' in request.data:
+            user_fields_to_update['first_name'] = request.data['first_name']
+        if 'last_name' in request.data:
+            user_fields_to_update['last_name'] = request.data['last_name']
+        if 'email' in request.data:
+            user_fields_to_update['email'] = request.data['email']
+        if 'phone' in request.data:
+            user_fields_to_update['phone'] = request.data['phone']
+        
+        # Update user if any fields provided
+        if user_fields_to_update:
+            User = get_user_model()
+            User.objects.filter(id=instance.user.id).update(**user_fields_to_update)
+            instance.user.refresh_from_db()
+        
+        # Return updated member with list serializer
+        output_serializer = SaccoMemberListSerializer(instance)
+        return Response(output_serializer.data)
+    
+    def perform_update(self, serializer):
+        """Save the member update"""
+        serializer.save()
     
     def create(self, request, *args, **kwargs):
         """

@@ -82,7 +82,7 @@ class SaccoMemberSerializer(serializers.ModelSerializer):
             'address', 'alternative_phone',
             'next_of_kin_name', 'next_of_kin_phone', 'next_of_kin_relationship',
             'status', 'date_joined', 'date_left',
-            'is_secretary', 'is_treasurer', 'is_chairperson',
+            'is_secretary', 'is_treasurer', 'is_chairperson', 'role',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['uuid', 'sacco_name', 'date_joined', 'created_at', 'updated_at']
@@ -118,7 +118,7 @@ class SaccoMemberListSerializer(serializers.ModelSerializer):
             'email', 'phone', 'status', 'date_joined',
             'total_savings', 'total_shares', 'address', 
             'profile_picture', 'savings_goal', 'savings_goal_deadline',
-            'created_at', 'updated_at'
+            'role', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'member_number', 'first_name', 'last_name',
                            'email', 'phone', 'total_savings', 'total_shares',
@@ -144,20 +144,15 @@ class SaccoMemberListSerializer(serializers.ModelSerializer):
             # Get all balances - now returns {section_id: {section_type, balance, ...}}
             all_balances = passbook.get_all_balances()
             
-            logger.info(f"Member {obj.id} - All balances: {all_balances}")
-            
             total = Decimal('0')
             for section_id, balance_data in all_balances.items():
                 section_type = balance_data.get('section_type')
                 balance = balance_data.get('balance', 0)
-                logger.info(f"Section {section_id}: type={section_type}, balance={balance}")
                 
                 # Check if this section is a savings type
                 if section_type == 'savings':
                     total += Decimal(str(balance))
-                    logger.info(f"Added {balance} to total. New total: {total}")
             
-            logger.info(f"Final total savings for member {obj.id}: {total}")
             return float(total)
         except Exception as e:
             # Log error for debugging
