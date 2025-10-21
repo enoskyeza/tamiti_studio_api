@@ -57,8 +57,8 @@ class SaccoOrganizationAdmin(admin.ModelAdmin):
 
 @admin.register(SaccoMember)
 class SaccoMemberAdmin(admin.ModelAdmin):
-    list_display = ['member_number', 'user', 'sacco', 'status', 'date_joined']
-    list_filter = ['status', 'sacco', 'is_secretary', 'is_treasurer', 'is_chairperson', 'date_joined']
+    list_display = ['member_number', 'user', 'sacco', 'role', 'status', 'date_joined']
+    list_filter = ['status', 'sacco', 'role', 'is_secretary', 'is_treasurer', 'is_chairperson', 'date_joined']
     search_fields = ['member_number', 'user__username', 'user__first_name', 'user__last_name', 'national_id']
     readonly_fields = ['uuid', 'date_joined', 'created_at', 'updated_at']
     
@@ -77,7 +77,7 @@ class SaccoMemberAdmin(admin.ModelAdmin):
             'description': 'Set personal savings targets for the member'
         }),
         ('Roles', {
-            'fields': ('is_secretary', 'is_treasurer', 'is_chairperson')
+            'fields': ('role', 'is_secretary', 'is_treasurer', 'is_chairperson')
         }),
         ('Dates', {
             'fields': ('date_joined', 'date_left')

@@ -176,6 +176,11 @@ class SaccoMember(BaseModel):
     is_secretary = models.BooleanField(default=False)
     is_treasurer = models.BooleanField(default=False)
     is_chairperson = models.BooleanField(default=False)
+    role = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Member's role (Chairperson, Secretary, Treasurer, Committee Member, etc.)"
+    )
     
     # Savings Goal
     savings_goal = models.DecimalField(
