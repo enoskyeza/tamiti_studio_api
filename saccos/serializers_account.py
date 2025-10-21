@@ -19,16 +19,22 @@ class SaccoAccountSerializer(serializers.ModelSerializer):
     sacco_name = serializers.CharField(source='sacco.name', read_only=True)
     is_active = serializers.BooleanField(source='account.is_active', read_only=True)
     balance = serializers.DecimalField(source='account.balance', read_only=True, max_digits=12, decimal_places=2)
+    # Flatten account fields for frontend compatibility
+    account_name = serializers.CharField(source='account.name', read_only=True)
+    account_type = serializers.CharField(source='account.type', read_only=True)
+    current_balance = serializers.DecimalField(source='account.balance', read_only=True, max_digits=12, decimal_places=2)
     
     class Meta:
         model = SaccoAccount
         fields = [
             'id', 'uuid', 'sacco', 'sacco_name', 'account', 'account_details',
             'bank_name', 'bank_branch', 'account_number',
-            'is_active', 'balance',
+            'is_active', 'balance', 'current_balance',
+            'account_name', 'account_type',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['uuid', 'is_active', 'balance', 'created_at', 'updated_at']
+        read_only_fields = ['uuid', 'is_active', 'balance', 'current_balance', 
+                           'account_name', 'account_type', 'created_at', 'updated_at']
 
 
 class SimplifiedMemberCreateSerializer(serializers.Serializer):
