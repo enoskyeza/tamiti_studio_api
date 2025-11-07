@@ -84,6 +84,9 @@ class SaccoAccountService:
             sacco_account.account.type = kwargs['account_type']
         if 'name' in kwargs:
             sacco_account.account.name = kwargs['name']
+        # Also handle account_name for frontend compatibility
+        if 'account_name' in kwargs:
+            sacco_account.account.name = kwargs['account_name']
         
         sacco_account.account.save()
         sacco_account.save()

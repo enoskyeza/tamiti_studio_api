@@ -117,7 +117,7 @@ class AccountFactory(DjangoModelFactory):
     number = factory.Faker('iban')
     type = AccountType.BANK
     balance = 0
-    currency = Currency.USD
+    currency = Currency.UGX
 
 
 class InvoiceFactory(DjangoModelFactory):

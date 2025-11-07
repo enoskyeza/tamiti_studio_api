@@ -6,6 +6,8 @@ from .models import (
     PassbookSection,
     PassbookEntry,
     DeductionRule,
+    CashRound,
+    CashRoundMember,
     CashRoundSchedule,
     WeeklyMeeting,
     WeeklyContribution,
@@ -184,18 +186,61 @@ class DeductionRuleAdmin(admin.ModelAdmin):
 # ============================================================================
 
 
+@admin.register(CashRound)
+class CashRoundAdmin(admin.ModelAdmin):
+    list_display = ['name', 'sacco', 'round_number', 'status', 'start_date', 'expected_end_date', 'created_by']
+    list_filter = ['status', 'sacco', 'start_date']
+    search_fields = ['name', 'sacco__name']
+    readonly_fields = ['uuid', 'round_number', 'started_at', 'completed_at', 'created_at', 'updated_at']
+    date_hierarchy = 'start_date'
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('sacco', 'name', 'round_number', 'status')
+        }),
+        ('Schedule', {
+            'fields': ('start_date', 'expected_end_date', 'actual_end_date', 'num_weeks')
+        }),
+        ('Configuration', {
+            'fields': ('weekly_amount',)
+        }),
+        ('Metadata', {
+            'fields': ('created_by', 'started_at', 'completed_at', 'notes')
+        }),
+        ('System', {
+            'fields': ('uuid', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+
+
+class CashRoundMemberInline(admin.TabularInline):
+    model = CashRoundMember
+    extra = 0
+    fields = ['member', 'position_in_rotation', 'is_active', 'joined_at', 'left_at']
+    readonly_fields = ['joined_at']
+
+
+@admin.register(CashRoundMember)
+class CashRoundMemberAdmin(admin.ModelAdmin):
+    list_display = ['cash_round', 'member', 'position_in_rotation', 'is_active', 'joined_at']
+    list_filter = ['is_active', 'cash_round__sacco', 'joined_at']
+    search_fields = ['member__user__first_name', 'member__user__last_name', 'cash_round__name']
+    readonly_fields = ['uuid', 'joined_at', 'created_at', 'updated_at']
+
+
 @admin.register(CashRoundSchedule)
 class CashRoundScheduleAdmin(admin.ModelAdmin):
-    list_display = ['sacco', 'start_date', 'end_date', 'current_position', 'is_active', 'created_at']
+    list_display = ['cash_round', 'sacco', 'start_date', 'end_date', 'current_position', 'is_active', 'created_at']
     list_filter = ['is_active', 'sacco', 'start_date']
     readonly_fields = ['uuid', 'created_at', 'updated_at']
 
 
 @admin.register(WeeklyMeeting)
 class WeeklyMeetingAdmin(admin.ModelAdmin):
-    list_display = ['sacco', 'meeting_date', 'week_number', 'year', 'cash_round_recipient', 'status', 'total_collected']
-    list_filter = ['status', 'sacco', 'year', 'meeting_date']
-    search_fields = ['cash_round_recipient__member_number', 'cash_round_recipient__user__username']
+    list_display = ['cash_round', 'sacco', 'meeting_date', 'week_number', 'year', 'cash_round_recipient', 'status', 'total_collected']
+    list_filter = ['status', 'cash_round', 'sacco', 'year', 'meeting_date']
+    search_fields = ['cash_round_recipient__member_number', 'cash_round_recipient__user__username', 'cash_round__name']
     readonly_fields = ['uuid', 'week_number', 'year', 'created_at', 'updated_at']
     date_hierarchy = 'meeting_date'
 

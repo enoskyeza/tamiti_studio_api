@@ -7,7 +7,8 @@ from django.contrib.auth import get_user_model
 from .models import (
     SaccoOrganization, SaccoMember, MemberPassbook,
     PassbookSection, PassbookEntry, DeductionRule,
-    CashRoundSchedule, WeeklyMeeting, WeeklyContribution,
+    CashRound, CashRoundMember, CashRoundSchedule,
+    WeeklyMeeting, WeeklyContribution,
     SaccoLoan, LoanPayment, LoanGuarantor, SaccoEmergencySupport
 )
 from .serializers import (
@@ -15,12 +16,14 @@ from .serializers import (
     MemberPassbookSerializer, PassbookSectionSerializer,
     PassbookEntrySerializer, DeductionRuleSerializer,
     PassbookStatementSerializer,
+    CashRoundSerializer, CashRoundListSerializer, CashRoundMemberSerializer,
     CashRoundScheduleSerializer, WeeklyMeetingSerializer,
     WeeklyContributionSerializer,
     SaccoLoanSerializer, LoanPaymentSerializer,
     LoanGuarantorSerializer, SaccoEmergencySupportSerializer
 )
 from .services.passbook_service import PassbookService
+from .services.cash_round_service import CashRoundService
 
 
 class SaccoOrganizationViewSet(viewsets.ModelViewSet):
@@ -435,21 +438,30 @@ class PassbookEntryViewSet(viewsets.ModelViewSet):
 class DeductionRuleViewSet(viewsets.ModelViewSet):
     """
     ViewSet for Deduction Rule management
-    Phase 2: Passbook System
+    Phase 2: Passbook System (Updated for CashRound)
     """
     queryset = DeductionRule.objects.all()
     serializer_class = DeductionRuleSerializer
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filter deduction rules by SACCO"""
+        """Filter deduction rules by cash round or SACCO"""
+        cash_round_id = self.kwargs.get('cash_round_pk') or self.request.query_params.get('cash_round')
         sacco_id = self.kwargs.get('sacco_pk') or self.request.query_params.get('sacco')
         
-        if sacco_id:
-            return DeductionRule.objects.filter(sacco_id=sacco_id)
+        queryset = DeductionRule.objects.all().select_related('cash_round', 'section')
         
+        # Filter by cash round (preferred)
+        if cash_round_id:
+            return queryset.filter(cash_round_id=cash_round_id)
+        
+        # Fallback to SACCO filter (backward compatibility)
+        if sacco_id:
+            return queryset.filter(cash_round__sacco_id=sacco_id)
+        
+        # Filter by user's SACCO
         if hasattr(self.request.user, 'sacco_membership'):
-            return DeductionRule.objects.filter(sacco=self.request.user.sacco_membership.sacco)
+            return queryset.filter(cash_round__sacco=self.request.user.sacco_membership.sacco)
         
         return DeductionRule.objects.none()
     
@@ -473,6 +485,251 @@ class DeductionRuleViewSet(viewsets.ModelViewSet):
 # ============================================================================
 # PHASE 3: WEEKLY MEETINGS VIEWS
 # ============================================================================
+
+
+class CashRoundViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for Cash Round management
+    Supports multiple concurrent cash rounds per SACCO
+    """
+    queryset = CashRound.objects.all()
+    serializer_class = CashRoundSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        """Use list serializer for list view"""
+        if self.action == 'list':
+            return CashRoundListSerializer
+        return CashRoundSerializer
+    
+    def get_queryset(self):
+        """
+        Filter cash rounds by SACCO and user role.
+        - Admins see all rounds in their SACCO
+        - Regular members see only rounds they're part of
+        """
+        queryset = CashRound.objects.all().prefetch_related('round_members__member__user')
+        
+        # Get SACCO context
+        sacco_id = self.kwargs.get('sacco_pk') or self.request.query_params.get('sacco')
+        sacco = None
+        
+        if sacco_id:
+            sacco = SaccoOrganization.objects.filter(id=sacco_id).first()
+            queryset = queryset.filter(sacco_id=sacco_id)
+        elif hasattr(self.request.user, 'sacco_membership'):
+            sacco = self.request.user.sacco_membership.sacco
+            queryset = queryset.filter(sacco=sacco)
+        else:
+            return CashRound.objects.none()
+        
+        # Role-based filtering
+        # Check if user is admin (chairperson or treasurer)
+        is_admin = False
+        if hasattr(self.request.user, 'sacco_membership') and sacco:
+            member = self.request.user.sacco_membership
+            is_admin = member.role in ['chairperson', 'treasurer']
+        
+        # If not admin, filter to only rounds the user is part of
+        if not is_admin:
+            queryset = queryset.filter(
+                round_members__member=self.request.user.sacco_membership,
+                round_members__is_active=True
+            ).distinct()
+        
+        # Filter by status
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        return queryset.order_by('-start_date')
+    
+    def create(self, request, *args, **kwargs):
+        """Create cash round with members - bypass serializer validation"""
+        from datetime import datetime
+        from rest_framework.exceptions import ValidationError
+        from rest_framework.response import Response
+        from rest_framework import status
+        
+        print("\n" + "="*50)
+        print("=== BACKEND: Creating Cash Round ===")
+        print("="*50)
+        print(f"Request Data: {self.request.data}")
+        print(f"Kwargs: {self.kwargs}")
+        print(f"User: {self.request.user}")
+        
+        try:
+            # Get SACCO from nested route or user's membership
+            sacco_id = self.kwargs.get('sacco_pk')
+            print(f"SACCO ID from kwargs: {sacco_id}")
+            
+            if not sacco_id and hasattr(self.request.user, 'sacco_membership'):
+                sacco_id = self.request.user.sacco_membership.sacco.id
+                print(f"SACCO ID from user membership: {sacco_id}")
+            
+            sacco = get_object_or_404(SaccoOrganization, id=sacco_id)
+            print(f"SACCO: {sacco}")
+            
+            # Get member IDs from request
+            member_ids = self.request.data.get('member_ids', [])
+            print(f"Member IDs: {member_ids}")
+            
+            if not member_ids:
+                print("ERROR: No member IDs provided")
+                raise ValidationError({"member_ids": "At least one member must be included in the cash round"})
+            
+            # Parse start_date string to date object
+            start_date_str = self.request.data.get('start_date')
+            print(f"Start date string: {start_date_str}")
+            
+            if not start_date_str:
+                print("ERROR: No start date provided")
+                raise ValidationError({"start_date": "Start date is required"})
+            
+            try:
+                start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+                print(f"Parsed start date: {start_date}")
+            except ValueError as e:
+                print(f"ERROR: Invalid date format: {e}")
+                raise ValidationError({"start_date": "Invalid date format. Expected YYYY-MM-DD"})
+            
+            print(f"About to create cash round with:")
+            print(f"  - Name: {self.request.data.get('name')}")
+            print(f"  - Start Date: {start_date}")
+            print(f"  - Weekly Amount: {self.request.data.get('weekly_amount')}")
+            print(f"  - Member IDs: {member_ids}")
+            print(f"  - Notes: {self.request.data.get('notes', '')}")
+            
+            # Create cash round using service
+            cash_round = CashRoundService.create_cash_round(
+                sacco=sacco,
+                name=self.request.data.get('name'),
+                start_date=start_date,
+                weekly_amount=self.request.data.get('weekly_amount'),
+                member_ids=member_ids,
+                created_by=self.request.user,
+                notes=self.request.data.get('notes', '')
+            )
+            
+            print(f"SUCCESS: Created cash round: {cash_round}")
+            print("="*50 + "\n")
+            
+            # Serialize and return the created cash round
+            serializer = self.get_serializer(cash_round)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            
+        except ValidationError as e:
+            print(f"VALIDATION ERROR: {e.detail}")
+            print("="*50 + "\n")
+            raise
+        except Exception as e:
+            print(f"UNEXPECTED ERROR: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            print("="*50 + "\n")
+            raise ValidationError({"error": str(e)})
+    
+    @action(detail=True, methods=['post'], url_path='start-round')
+    def start_round(self, request, pk=None, sacco_pk=None):
+        """Start a planned cash round and create first meeting"""
+        cash_round = self.get_object()
+        
+        try:
+            result = CashRoundService.start_round_with_first_meeting(cash_round, request.user)
+            cash_round_serializer = self.get_serializer(result['cash_round'])
+            meeting_serializer = WeeklyMeetingSerializer(result['meeting'])
+            
+            return Response({
+                'cash_round': cash_round_serializer.data,
+                'meeting': meeting_serializer.data,
+                'message': 'Cash round started and first meeting created successfully'
+            })
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['post'], url_path='start-next-meeting')
+    def start_next_meeting(self, request, pk=None, sacco_pk=None):
+        """Create the next meeting in the cash round"""
+        cash_round = self.get_object()
+        
+        try:
+            result = CashRoundService.create_next_meeting(cash_round, request.user)
+            meeting_serializer = WeeklyMeetingSerializer(result['meeting'])
+            
+            return Response({
+                'meeting': meeting_serializer.data,
+                'message': 'Next meeting created successfully'
+            })
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['post'])
+    def complete(self, request, pk=None, sacco_pk=None):
+        """Complete an active cash round"""
+        cash_round = self.get_object()
+        
+        try:
+            updated_round = CashRoundService.complete_cash_round(cash_round)
+            serializer = self.get_serializer(updated_round)
+            return Response(serializer.data)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['get'])
+    def members(self, request, pk=None, sacco_pk=None):
+        """Get members in this cash round"""
+        cash_round = self.get_object()
+        members = cash_round.round_members.filter(is_active=True).select_related('member__user')
+        serializer = CashRoundMemberSerializer(members, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def add_member(self, request, pk=None, sacco_pk=None):
+        """Add a member to the cash round"""
+        cash_round = self.get_object()
+        member_id = request.data.get('member_id')
+        position = request.data.get('position')
+        
+        if not member_id:
+            return Response({'error': 'member_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            member = get_object_or_404(SaccoMember, id=member_id)
+            round_member = CashRoundService.add_member_to_round(cash_round, member, position)
+            serializer = CashRoundMemberSerializer(round_member)
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['delete'], url_path='members/(?P<member_id>[^/.]+)')
+    def remove_member(self, request, pk=None, member_id=None, sacco_pk=None):
+        """Remove a member from the cash round"""
+        cash_round = self.get_object()
+        
+        if not member_id:
+            return Response({'error': 'member_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            member = get_object_or_404(SaccoMember, id=member_id)
+            CashRoundService.remove_member_from_round(cash_round, member)
+            return Response({'message': 'Member removed successfully'}, status=status.HTTP_200_OK)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['get'])
+    def active(self, request, sacco_pk=None):
+        """Get all active cash rounds"""
+        sacco_id = sacco_pk or self.kwargs.get('sacco_pk') or self.request.query_params.get('sacco')
+        if sacco_id:
+            sacco = get_object_or_404(SaccoOrganization, id=sacco_id)
+        elif hasattr(request.user, 'sacco_membership'):
+            sacco = request.user.sacco_membership.sacco
+        else:
+            return Response({'error': 'SACCO not found'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        active_rounds = CashRoundService.get_active_rounds(sacco)
+        serializer = CashRoundListSerializer(active_rounds, many=True)
+        return Response(serializer.data)
 
 
 class CashRoundScheduleViewSet(viewsets.ModelViewSet):
@@ -525,11 +782,12 @@ class WeeklyMeetingViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filter meetings by SACCO"""
+        """Filter meetings by SACCO and optionally by cash round"""
         sacco_id = self.kwargs.get('sacco_pk') or self.request.query_params.get('sacco')
         year = self.request.query_params.get('year')
+        cash_round_id = self.request.query_params.get('cash_round')
         
-        queryset = WeeklyMeeting.objects.all()
+        queryset = WeeklyMeeting.objects.all().select_related('cash_round', 'sacco', 'cash_round_recipient__user')
         
         if sacco_id:
             queryset = queryset.filter(sacco_id=sacco_id)
@@ -538,10 +796,15 @@ class WeeklyMeetingViewSet(viewsets.ModelViewSet):
         else:
             return WeeklyMeeting.objects.none()
         
+        # Filter by cash round if provided
+        if cash_round_id:
+            queryset = queryset.filter(cash_round_id=cash_round_id)
+        
+        # Filter by year if provided
         if year:
             queryset = queryset.filter(year=year)
         
-        return queryset
+        return queryset.order_by('-meeting_date')
     
     def perform_create(self, serializer):
         """Ensure nested SACCO creation works"""
