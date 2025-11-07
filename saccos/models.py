@@ -569,7 +569,9 @@ class DeductionRule(BaseModel):
         ordering = ['sacco', 'section']
     
     def __str__(self):
-        return f"{self.sacco.name} - {self.section.name} - {self.amount}"
+        sacco_name = getattr(self.sacco, 'name', 'Unknown SACCO')
+        section_name = getattr(self.section, 'name', 'Unassigned Section')
+        return f"{sacco_name} - {section_name} - {self.amount}"
     
     def is_effective(self, date=None):
         """Check if rule is effective on a given date"""
