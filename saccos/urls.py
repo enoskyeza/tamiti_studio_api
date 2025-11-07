@@ -7,6 +7,7 @@ from .views import (
     PassbookSectionViewSet,
     PassbookEntryViewSet,
     DeductionRuleViewSet,
+    CashRoundViewSet,
     CashRoundScheduleViewSet,
     WeeklyMeetingViewSet,
     WeeklyContributionViewSet,
@@ -39,7 +40,8 @@ router.register(r'entries', PassbookEntryViewSet, basename='passbook-entry')
 router.register(r'deduction-rules', DeductionRuleViewSet, basename='deduction-rule')
 router.register(r'account', SaccoAccountViewSet, basename='sacco-account')
 
-# Phase 3: Weekly Meetings
+# Phase 3: Weekly Meetings & Cash Rounds
+router.register(r'cash-rounds', CashRoundViewSet, basename='cash-round')
 router.register(r'cash-round-schedules', CashRoundScheduleViewSet, basename='cash-round-schedule')
 router.register(r'meetings', WeeklyMeetingViewSet, basename='weekly-meeting')
 router.register(r'contributions', WeeklyContributionViewSet, basename='weekly-contribution')
@@ -77,7 +79,50 @@ urlpatterns = [
         'delete': 'destroy'
     }), name='sacco-member-detail'),
     
-    # Phase 3: Weekly meetings nested under SACCO
+    # Phase 3: Cash rounds nested under SACCO
+    path('<int:sacco_pk>/cash-rounds/', CashRoundViewSet.as_view({
+        'get': 'list',
+        'post': 'create'
+    }), name='sacco-cash-round-list'),
+    path('<int:sacco_pk>/cash-rounds/active/', CashRoundViewSet.as_view({
+        'get': 'active'
+    }), name='sacco-cash-round-active'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/', CashRoundViewSet.as_view({
+        'get': 'retrieve',
+        'put': 'update',
+        'patch': 'partial_update',
+        'delete': 'destroy'
+    }), name='sacco-cash-round-detail'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/start-round/', CashRoundViewSet.as_view({
+        'post': 'start_round'
+    }), name='sacco-cash-round-start'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/start-next-meeting/', CashRoundViewSet.as_view({
+        'post': 'start_next_meeting'
+    }), name='sacco-cash-round-start-next-meeting'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/complete/', CashRoundViewSet.as_view({
+        'post': 'complete'
+    }), name='sacco-cash-round-complete'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/members/', CashRoundViewSet.as_view({
+        'get': 'members',
+        'post': 'add_member'
+    }), name='sacco-cash-round-members'),
+    path('<int:sacco_pk>/cash-rounds/<int:pk>/members/<int:member_id>/', CashRoundViewSet.as_view({
+        'delete': 'remove_member'
+    }), name='sacco-cash-round-member-remove'),
+    
+    # Deduction rules nested under cash round
+    path('cash-rounds/<int:cash_round_pk>/deduction-rules/', DeductionRuleViewSet.as_view({
+        'get': 'list',
+        'post': 'create'
+    }), name='cash-round-deduction-rule-list'),
+    path('cash-rounds/<int:cash_round_pk>/deduction-rules/<int:pk>/', DeductionRuleViewSet.as_view({
+        'get': 'retrieve',
+        'put': 'update',
+        'patch': 'partial_update',
+        'delete': 'destroy'
+    }), name='cash-round-deduction-rule-detail'),
+    
+    # Cash round schedules nested under SACCO
     path('<int:sacco_pk>/cash-round-schedules/', CashRoundScheduleViewSet.as_view({
         'get': 'list',
         'post': 'create'
@@ -88,6 +133,8 @@ urlpatterns = [
         'patch': 'partial_update',
         'delete': 'destroy'
     }), name='sacco-cash-round-schedule-detail'),
+    
+    # Weekly meetings nested under SACCO
     path('<int:sacco_pk>/meetings/', WeeklyMeetingViewSet.as_view({
         'get': 'list',
         'post': 'create'

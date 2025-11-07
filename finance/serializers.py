@@ -1323,7 +1323,8 @@ class PersonalLoanListSerializer(serializers.ModelSerializer):
 class PersonalLoanCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating personal loans"""
     account = serializers.PrimaryKeyRelatedField(
-        queryset=Account.objects.filter(scope=FinanceScope.PERSONAL)
+        queryset=Account.objects.filter(scope=FinanceScope.PERSONAL),
+        write_only=True
     )
     
     class Meta:

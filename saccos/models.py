@@ -517,13 +517,26 @@ class PassbookEntry(BaseModel):
 class DeductionRule(BaseModel):
     """
     Configurable deduction rules for cash round recipients
-    Phase 2: Passbook System
+    Phase 2: Passbook System (Updated to link to CashRound)
     """
+    # NEW: Link to CashRound instead of SACCO
+    cash_round = models.ForeignKey(
+        'CashRound',  # String reference since CashRound is defined later
+        on_delete=models.CASCADE,
+        related_name='deduction_rules',
+        null=True,  # Nullable during migration
+        blank=True
+    )
+    
+    # DEPRECATED: Will be removed after migration
     sacco = models.ForeignKey(
         SaccoOrganization,
         on_delete=models.CASCADE,
-        related_name='deduction_rules'
+        related_name='deduction_rules',
+        null=True,  # Nullable during migration
+        blank=True
     )
+    
     section = models.ForeignKey(
         PassbookSection,
         on_delete=models.CASCADE,
@@ -579,20 +592,150 @@ class DeductionRule(BaseModel):
 # ============================================================================
 
 
-class CashRoundSchedule(BaseModel):
+class CashRound(BaseModel):
     """
-    Schedule for cash round rotation
-    Tracks which member receives the cash round each week
-    Phase 3: Weekly Meetings
+    A cash round cycle with specific members and schedule.
+    Multiple rounds can run concurrently.
+    Phase 3: Weekly Meetings & Cash Rounds (Restructured)
     """
     sacco = models.ForeignKey(
         SaccoOrganization,
         on_delete=models.CASCADE,
-        related_name='cash_round_schedules'
+        related_name='cash_rounds'
     )
     
-    # Schedule Details
+    # Identity
+    name = models.CharField(max_length=200, help_text="e.g., Round 1 - January 2025")
+    round_number = models.PositiveIntegerField(help_text="Auto-increment per SACCO")
+    
+    # Schedule
     start_date = models.DateField()
+    expected_end_date = models.DateField(help_text="Auto-calc: start + (num_members * weeks)")
+    actual_end_date = models.DateField(null=True, blank=True)
+    
+    # Configuration
+    weekly_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="How much each member pays per week"
+    )
+    num_weeks = models.PositiveIntegerField(help_text="Usually = number of members")
+    
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('planned', 'Planned'),      # Created but not started
+            ('active', 'Active'),        # Currently running
+            ('completed', 'Completed'),  # Finished
+            ('cancelled', 'Cancelled')
+        ],
+        default='planned'
+    )
+    
+    # Metadata
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_cash_rounds'
+    )
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    
+    class Meta:
+        ordering = ['-start_date']
+        unique_together = [['sacco', 'round_number']]
+        indexes = [
+            models.Index(fields=['sacco', 'status']),
+        ]
+    
+    def __str__(self):
+        return f"{self.sacco.name} - {self.name}"
+    
+    @property
+    def is_active(self):
+        """Check if round is currently active"""
+        return self.status == 'active'
+    
+    def start_round(self):
+        """Activate the cash round"""
+        if self.status == 'planned':
+            self.status = 'active'
+            self.started_at = timezone.now()
+            self.save()
+    
+    def complete_round(self):
+        """Mark round as completed"""
+        if self.status == 'active':
+            self.status = 'completed'
+            self.completed_at = timezone.now()
+            self.actual_end_date = timezone.now().date()
+            self.save()
+
+
+class CashRoundMember(BaseModel):
+    """
+    Junction table: which SACCO members are in which cash round.
+    Phase 3: Weekly Meetings & Cash Rounds (Restructured)
+    """
+    cash_round = models.ForeignKey(
+        CashRound,
+        on_delete=models.CASCADE,
+        related_name='round_members'
+    )
+    member = models.ForeignKey(
+        SaccoMember,
+        on_delete=models.CASCADE,
+        related_name='cash_rounds'
+    )
+    
+    # Position in rotation
+    position_in_rotation = models.PositiveIntegerField()
+    
+    # Status
+    is_active = models.BooleanField(default=True)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        unique_together = [['cash_round', 'member']]
+        ordering = ['position_in_rotation']
+        indexes = [
+            models.Index(fields=['cash_round', 'is_active']),
+        ]
+    
+    def __str__(self):
+        return f"{self.member.user.get_full_name()} in {self.cash_round.name}"
+
+
+class CashRoundSchedule(BaseModel):
+    """
+    Schedule for cash round rotation
+    Tracks which member receives the cash round each week
+    Phase 3: Weekly Meetings (Restructured to link to CashRound)
+    """
+    # NEW: Link to CashRound
+    cash_round = models.OneToOneField(
+        CashRound,
+        on_delete=models.CASCADE,
+        related_name='schedule',
+        null=True,  # Nullable during migration
+        blank=True
+    )
+    
+    # DEPRECATED: Will be removed after migration - keep for backward compatibility
+    sacco = models.ForeignKey(
+        SaccoOrganization,
+        on_delete=models.CASCADE,
+        related_name='cash_round_schedules',
+        null=True,  # Nullable during migration
+        blank=True
+    )
+    
+    # Schedule Details - DEPRECATED (moved to CashRound)
+    start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     
@@ -638,8 +781,18 @@ class CashRoundSchedule(BaseModel):
 class WeeklyMeeting(BaseModel):
     """
     Weekly SACCO meeting record
-    Phase 3: Weekly Meetings
+    Phase 3: Weekly Meetings (Restructured to link to CashRound)
     """
+    # NEW: Link to CashRound
+    cash_round = models.ForeignKey(
+        CashRound,
+        on_delete=models.CASCADE,
+        related_name='meetings',
+        null=True,  # Nullable during migration
+        blank=True
+    )
+    
+    # Keep for queries - not deprecated
     sacco = models.ForeignKey(
         SaccoOrganization,
         on_delete=models.CASCADE,
@@ -648,7 +801,7 @@ class WeeklyMeeting(BaseModel):
     
     # Meeting Details
     meeting_date = models.DateField()
-    week_number = models.PositiveIntegerField(help_text="Week number in the year")
+    week_number = models.PositiveIntegerField(help_text="Week number in cash round cycle")
     year = models.PositiveIntegerField()
     
     # Cash Round

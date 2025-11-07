@@ -859,6 +859,16 @@ class PersonalFinanceDashboardView(APIView):
             if t.type == 'expense'
         )
 
+        # Operating (P&L) view: only transactions that affect profit
+        operating_income = sum(
+            t.amount for t in transactions_this_month
+            if t.type == 'income' and getattr(t, 'affects_profit', True)
+        )
+        operating_expenses = sum(
+            t.amount + t.transaction_charge for t in transactions_this_month
+            if t.type == 'expense' and getattr(t, 'affects_profit', True)
+        )
+
         # Get active budgets
         active_budgets = PersonalBudget.objects.filter(
             user=user,
@@ -886,6 +896,9 @@ class PersonalFinanceDashboardView(APIView):
             'monthly_income': monthly_income,
             'monthly_expenses': monthly_expenses,
             'net_monthly': monthly_income - monthly_expenses,
+            'operating_income': operating_income,
+            'operating_expenses': operating_expenses,
+            'operating_net': operating_income - operating_expenses,
             'active_budgets': active_budgets,
             'active_savings_goals': savings_goals,
             'due_recurring_transactions': due_recurring,

@@ -918,11 +918,15 @@ class PersonalFinanceService:
         from decimal import Decimal
 
         # Validate account
-        account = Account.objects.get(
-            id=loan_data['account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
+        account_value = loan_data.get('account')
+        if isinstance(account_value, Account):
+            account = account_value
+        else:
+            account = Account.objects.get(
+                id=account_value,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
 
         loan = PersonalLoan.objects.create(
             user=user,
@@ -961,11 +965,15 @@ class PersonalFinanceService:
         from decimal import Decimal
 
         debt = PersonalDebt.objects.get(id=debt_id, user=user)
-        account = Account.objects.get(
-            id=payment_data['account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
+        account_obj = payment_data.get('account')
+        if isinstance(account_obj, Account):
+            account = account_obj
+        else:
+            account = Account.objects.get(
+                id=account_obj,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
 
         amount = Decimal(str(payment_data['amount'])).quantize(Decimal('0.01'))
         if amount <= 0:
@@ -1012,11 +1020,15 @@ class PersonalFinanceService:
         from decimal import Decimal
 
         loan = PersonalLoan.objects.get(id=loan_id, user=user)
-        account = Account.objects.get(
-            id=repayment_data['account'],
-            scope=FinanceScope.PERSONAL,
-            owner=user
-        )
+        account_obj = repayment_data.get('account')
+        if isinstance(account_obj, Account):
+            account = account_obj
+        else:
+            account = Account.objects.get(
+                id=account_obj,
+                scope=FinanceScope.PERSONAL,
+                owner=user
+            )
 
         amount = Decimal(str(repayment_data['amount'])).quantize(Decimal('0.01'))
         if amount <= 0:

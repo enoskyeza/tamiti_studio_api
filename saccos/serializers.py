@@ -2,7 +2,8 @@ from rest_framework import serializers
 from .models import (
     SaccoOrganization, SaccoMember, MemberPassbook,
     PassbookSection, PassbookEntry, DeductionRule,
-    CashRoundSchedule, WeeklyMeeting, WeeklyContribution,
+    CashRound, CashRoundMember, CashRoundSchedule,
+    WeeklyMeeting, WeeklyContribution,
     SaccoLoan, LoanPayment, LoanGuarantor, SaccoEmergencySupport,
     SubscriptionPlan, SaccoSubscription, SubscriptionInvoice, UsageMetrics,
     SaccoAccount
@@ -224,19 +225,20 @@ class PassbookEntrySerializer(serializers.ModelSerializer):
 
 
 class DeductionRuleSerializer(serializers.ModelSerializer):
-    """Serializer for Deduction Rule"""
+    """Serializer for Deduction Rule (Updated for CashRound)"""
     section_name = serializers.CharField(source='section.name', read_only=True)
+    cash_round_name = serializers.CharField(source='cash_round.name', read_only=True, allow_null=True)
     is_effective_now = serializers.SerializerMethodField()
     
     class Meta:
         model = DeductionRule
         fields = [
-            'id', 'uuid', 'sacco', 'section', 'section_name',
-            'amount', 'applies_to', 'is_active',
+            'id', 'uuid', 'cash_round', 'cash_round_name', 'sacco', 
+            'section', 'section_name', 'amount', 'applies_to', 'is_active',
             'effective_from', 'effective_until', 'description',
             'is_effective_now', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['uuid', 'section_name', 'is_effective_now', 'created_at', 'updated_at']
+        read_only_fields = ['uuid', 'cash_round_name', 'section_name', 'is_effective_now', 'created_at', 'updated_at']
         extra_kwargs = {
             'amount': {'required': False}  # Amount is optional, will be set from section
         }
@@ -272,6 +274,69 @@ class PassbookStatementSerializer(serializers.Serializer):
 # ============================================================================
 
 
+class CashRoundMemberSerializer(serializers.ModelSerializer):
+    """Serializer for Cash Round Member"""
+    member_number = serializers.CharField(source='member.member_number', read_only=True)
+    member_name = serializers.CharField(source='member.user.get_full_name', read_only=True)
+    
+    class Meta:
+        model = CashRoundMember
+        fields = [
+            'id', 'uuid', 'cash_round', 'member', 'member_number', 'member_name',
+            'position_in_rotation', 'is_active', 'joined_at', 'left_at',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['uuid', 'member_number', 'member_name', 'joined_at', 'created_at', 'updated_at']
+
+
+class CashRoundSerializer(serializers.ModelSerializer):
+    """Serializer for Cash Round"""
+    sacco_name = serializers.CharField(source='sacco.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True, allow_null=True)
+    member_count = serializers.SerializerMethodField()
+    members = CashRoundMemberSerializer(source='round_members', many=True, read_only=True)
+    
+    class Meta:
+        model = CashRound
+        fields = [
+            'id', 'uuid', 'sacco', 'sacco_name', 'name', 'round_number',
+            'start_date', 'expected_end_date', 'actual_end_date',
+            'weekly_amount', 'num_weeks', 'status',
+            'created_by', 'created_by_name', 'started_at', 'completed_at',
+            'notes', 'member_count', 'members',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'uuid', 'sacco_name', 'round_number', 'created_by_name',
+            'started_at', 'completed_at', 'member_count', 'members',
+            'created_at', 'updated_at'
+        ]
+    
+    def get_member_count(self, obj):
+        """Get number of active members in this cash round"""
+        return obj.round_members.filter(is_active=True).count()
+
+
+class CashRoundListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for Cash Round listing"""
+    sacco_name = serializers.CharField(source='sacco.name', read_only=True)
+    member_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = CashRound
+        fields = [
+            'id', 'uuid', 'sacco', 'sacco_name', 'name', 'round_number',
+            'start_date', 'expected_end_date', 'actual_end_date',
+            'weekly_amount', 'num_weeks', 'status', 'member_count',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['uuid', 'sacco_name', 'round_number', 'member_count', 'created_at', 'updated_at']
+    
+    def get_member_count(self, obj):
+        """Get number of active members in this cash round"""
+        return obj.round_members.filter(is_active=True).count()
+
+
 class CashRoundScheduleSerializer(serializers.ModelSerializer):
     """Serializer for Cash Round Schedule"""
     current_recipient = serializers.SerializerMethodField()
@@ -280,7 +345,7 @@ class CashRoundScheduleSerializer(serializers.ModelSerializer):
     class Meta:
         model = CashRoundSchedule
         fields = [
-            'id', 'uuid', 'sacco', 'start_date', 'end_date', 'is_active',
+            'id', 'uuid', 'cash_round', 'sacco', 'start_date', 'end_date', 'is_active',
             'rotation_order', 'current_position', 'current_recipient',
             'next_recipient', 'created_at', 'updated_at'
         ]
