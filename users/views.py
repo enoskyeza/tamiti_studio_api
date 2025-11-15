@@ -226,6 +226,8 @@ class CurrentUserView(generics.GenericAPIView):
             'email': request.user.email,
             'first_name': request.user.first_name,
             'last_name': request.user.last_name,
+            'phone': getattr(request.user, 'phone', ''),
+            'role': getattr(request.user, 'role', None),
             'is_staff': request.user.is_staff,
             'is_superuser': request.user.is_superuser,
         }
@@ -308,6 +310,8 @@ class LoginView(generics.GenericAPIView):
                     'email': user.email,
                     'first_name': user.first_name,
                     'last_name': user.last_name,
+                    'phone': getattr(user, 'phone', ''),
+                    'role': getattr(user, 'role', None),
                     'is_staff': user.is_staff,
                     'is_superuser': user.is_superuser,
                 }

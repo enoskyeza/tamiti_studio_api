@@ -1,6 +1,7 @@
 from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from dateutil.relativedelta import relativedelta
 
 
@@ -19,6 +20,7 @@ class LoanService:
         interest_rate,
         duration_months,
         purpose,
+        repayment_frequency='monthly',
         guarantor_ids=None
     ):
         """
@@ -43,13 +45,14 @@ class LoanService:
         loan_number = f"{sacco.registration_number or 'LOAN'}-{loan_count + 1:05d}"
         
         # Create loan
-        loan = SaccoLoan.objects.create(
+        loan = SaccoLoan(
             sacco=sacco,
             member=member,
             loan_number=loan_number,
             principal_amount=principal_amount,
             interest_rate=interest_rate,
             duration_months=duration_months,
+            repayment_frequency=repayment_frequency,
             purpose=purpose,
             application_date=timezone.now().date(),
             status='pending'
@@ -99,6 +102,12 @@ class LoanService:
         loan.approval_date = timezone.now().date()
         
         if disbursement_date:
+            # Convert string dates from API to date objects
+            if isinstance(disbursement_date, str):
+                parsed = parse_date(disbursement_date)
+                if not parsed:
+                    raise ValueError("Invalid disbursement date format; expected YYYY-MM-DD")
+                disbursement_date = parsed
             loan.disbursement_date = disbursement_date
             loan.due_date = disbursement_date + relativedelta(months=loan.duration_months)
             loan.status = 'disbursed'
@@ -127,10 +136,16 @@ class LoanService:
         
         if not disbursement_date:
             disbursement_date = timezone.now().date()
+        elif isinstance(disbursement_date, str):
+            parsed = parse_date(disbursement_date)
+            if not parsed:
+                raise ValueError("Invalid disbursement date format; expected YYYY-MM-DD")
+            disbursement_date = parsed
         
         loan.disbursement_date = disbursement_date
         loan.due_date = disbursement_date + relativedelta(months=loan.duration_months)
-        loan.status = 'active'
+        # Mark loan as disbursed so payments are allowed
+        loan.status = 'disbursed'
         loan.save()
         
         # Record in passbook (debit from loan section)
@@ -200,6 +215,11 @@ class LoanService:
         
         if loan.status not in ['disbursed', 'active']:
             raise ValueError(f"Cannot record payment for loan with status: {loan.status}")
+        
+        # Coerce payment amount to Decimal (may come in as string from API)
+        if not payment_amount:
+            raise ValueError("Payment amount is required")
+        payment_amount = Decimal(str(payment_amount))
         
         # Split payment: interest first, then principal
         interest_due = loan.balance_interest
