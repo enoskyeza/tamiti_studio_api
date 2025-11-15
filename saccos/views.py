@@ -251,6 +251,25 @@ class SaccoMemberViewSet(viewsets.ModelViewSet):
         passbook = member.get_passbook()
         serializer = MemberPassbookSerializer(passbook)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='pending-payments')
+    def pending_payments(self, request, pk=None, sacco_pk=None):
+        """Get pending payments (loans + weekly contributions) for this member.
+
+        Optional query param:
+        - days: lookahead window in days (default: 3)
+        """
+        from .services.reporting_service import ReportingService
+
+        member = self.get_object()
+        days_param = request.query_params.get('days')
+        try:
+            days = int(days_param) if days_param is not None else 3
+        except ValueError:
+            days = 3
+
+        data = ReportingService.get_member_pending_payments(member, days_ahead=days)
+        return Response(data)
     
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
@@ -955,6 +974,47 @@ class SaccoLoanViewSet(viewsets.ModelViewSet):
         
         return queryset
     
+    def perform_create(self, serializer):
+        """Create loan via LoanService so totals are computed correctly"""
+        from rest_framework.exceptions import ValidationError
+        from saccos.services.loan_service import LoanService
+        
+        sacco_id = self.request.data.get('sacco')
+        member_id = self.request.data.get('member')
+        
+        # Resolve SACCO
+        if sacco_id:
+            sacco = get_object_or_404(SaccoOrganization, id=sacco_id)
+        elif hasattr(self.request.user, 'sacco_membership'):
+            sacco = self.request.user.sacco_membership.sacco
+        else:
+            raise ValidationError({'sacco': 'SACCO ID is required'})
+        
+        # Resolve member (must belong to SACCO)
+        if not member_id:
+            raise ValidationError({'member': 'Member ID is required'})
+        member = get_object_or_404(SaccoMember, id=member_id, sacco=sacco)
+        
+        principal_amount = serializer.validated_data['principal_amount']
+        interest_rate = serializer.validated_data['interest_rate']
+        duration_months = serializer.validated_data.get('duration_months') or 12
+        purpose = serializer.validated_data['purpose']
+        repayment_frequency = serializer.validated_data.get('repayment_frequency', 'monthly')
+        guarantor_ids = self.request.data.get('guarantor_ids') or None
+        
+        loan = LoanService.create_loan_application(
+            sacco=sacco,
+            member=member,
+            principal_amount=principal_amount,
+            interest_rate=interest_rate,
+            duration_months=duration_months,
+            purpose=purpose,
+            repayment_frequency=repayment_frequency,
+            guarantor_ids=guarantor_ids,
+        )
+        
+        serializer.instance = loan
+    
     @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
         """Approve a loan"""
@@ -1051,20 +1111,25 @@ class LoanPaymentViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         """Record payment using LoanService"""
+        from rest_framework.exceptions import ValidationError
         from saccos.services.loan_service import LoanService
         
         loan_id = self.request.data.get('loan')
         loan = get_object_or_404(SaccoLoan, id=loan_id)
         
-        result = LoanService.record_loan_payment(
-            loan=loan,
-            payment_amount=self.request.data.get('total_amount'),
-            payment_date=self.request.data.get('payment_date'),
-            recorded_by=self.request.user,
-            payment_method=self.request.data.get('payment_method', ''),
-            reference_number=self.request.data.get('reference_number', ''),
-            notes=self.request.data.get('notes', '')
-        )
+        try:
+            result = LoanService.record_loan_payment(
+                loan=loan,
+                payment_amount=self.request.data.get('total_amount'),
+                payment_date=self.request.data.get('payment_date'),
+                recorded_by=self.request.user,
+                payment_method=self.request.data.get('payment_method', ''),
+                reference_number=self.request.data.get('reference_number', ''),
+                notes=self.request.data.get('notes', '')
+            )
+        except ValueError as e:
+            # Surface business-rule errors (e.g. invalid loan status) as 400 responses
+            raise ValidationError({'error': str(e)})
         
         serializer.instance = result['payment']
 

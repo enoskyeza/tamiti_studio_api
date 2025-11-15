@@ -78,6 +78,9 @@ urlpatterns = [
         'patch': 'partial_update',
         'delete': 'destroy'
     }), name='sacco-member-detail'),
+    path('<int:sacco_pk>/members/<int:pk>/pending-payments/', SaccoMemberViewSet.as_view({
+        'get': 'pending_payments'
+    }), name='sacco-member-pending-payments'),
     
     # Phase 3: Cash rounds nested under SACCO
     path('<int:sacco_pk>/cash-rounds/', CashRoundViewSet.as_view({

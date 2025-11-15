@@ -100,6 +100,102 @@ class ReportingService:
             'attendance': attendance,
             'generated_at': timezone.now()
         }
+
+    @staticmethod
+    def get_member_pending_payments(member, days_ahead: int = 3):
+        """Get pending payments for a member (loans + weekly contributions).
+
+        Pending payments include:
+        - Active/disbursed loans whose overall due_date is within the next
+          ``days_ahead`` days or already overdue.
+        - Weekly meetings (cash rounds) in the same SACCO whose meeting_date
+          is within +/- ``days_ahead`` days and where the member has not made
+          a contribution (or was marked absent/zero contribution).
+
+        This is intended for dashboard display of short-term obligations.
+        """
+        from saccos.models import WeeklyMeeting, WeeklyContribution, SaccoLoan
+
+        today = timezone.now().date()
+        upcoming_cutoff = today + timedelta(days=days_ahead)
+
+        items = []
+
+        # ----------------------------
+        # 1) Loan repayments (simple: loan-level due date)
+        # ----------------------------
+        loans = member.loans.filter(status__in=['disbursed', 'active'])
+
+        for loan in loans:
+            if not loan.due_date:
+                continue
+
+            days_to_due = (loan.due_date - today).days
+            if days_to_due > days_ahead:
+                # Not due soon, skip
+                continue
+
+            status = 'overdue' if loan.due_date < today else 'due_soon'
+
+            items.append({
+                'type': 'loan',
+                'loan_id': loan.id,
+                'loan_number': loan.loan_number,
+                'amount_due': loan.total_balance,
+                'due_date': loan.due_date,
+                'status': status,
+                'days_until_due': days_to_due,
+            })
+
+        # ----------------------------
+        # 2) Weekly meeting contributions (cash rounds)
+        # ----------------------------
+        meetings = WeeklyMeeting.objects.filter(
+            sacco=member.sacco,
+            meeting_date__gte=today - timedelta(days=days_ahead),
+            meeting_date__lte=upcoming_cutoff,
+            status__in=['planned', 'in_progress'],
+        )
+
+        for meeting in meetings:
+            contribution = WeeklyContribution.objects.filter(
+                meeting=meeting,
+                member=member,
+            ).first()
+
+            # If member has a present contribution with a positive amount, consider it paid
+            if contribution and contribution.was_present and contribution.amount_contributed and contribution.amount_contributed > 0:
+                continue
+
+            due_date = meeting.meeting_date
+            days_to_due = (due_date - today).days
+            status = 'overdue' if due_date < today else 'due_soon'
+
+            # Determine expected weekly amount: prefer cash round weekly_amount, fallback to SACCO default
+            weekly_amount = member.sacco.cash_round_amount
+            if meeting.cash_round and meeting.cash_round.weekly_amount:
+                weekly_amount = meeting.cash_round.weekly_amount
+
+            items.append({
+                'type': 'meeting',
+                'meeting_id': meeting.id,
+                'week_number': meeting.week_number,
+                'cash_round_name': meeting.cash_round.name if meeting.cash_round else None,
+                'amount_due': weekly_amount,
+                'due_date': due_date,
+                'status': status,
+                'days_until_due': days_to_due,
+            })
+
+        # Sort items by due date ascending
+        items.sort(key=lambda x: x['due_date'])
+
+        return {
+            'member_id': member.id,
+            'has_pending': len(items) > 0,
+            'total_count': len(items),
+            'items': items,
+        }
     
     @staticmethod
     def generate_loan_portfolio_report(sacco, as_of_date=None):

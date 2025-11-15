@@ -498,7 +498,7 @@ class SaccoLoanSerializer(serializers.ModelSerializer):
             'id', 'uuid', 'sacco', 'member', 'member_number', 'member_name',
             'loan_number', 'principal_amount', 'interest_rate', 'interest_amount',
             'total_amount', 'application_date', 'approval_date', 'disbursement_date',
-            'due_date', 'duration_months', 'amount_paid_principal',
+            'due_date', 'duration_months', 'repayment_frequency', 'amount_paid_principal',
             'amount_paid_interest', 'balance_principal', 'balance_interest',
             'total_balance', 'status', 'purpose', 'notes', 'approved_by',
             'approved_by_name', 'rejection_reason', 'is_overdue',

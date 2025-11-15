@@ -1119,6 +1119,15 @@ class SaccoLoan(BaseModel):
     disbursement_date = models.DateField(null=True, blank=True)
     due_date = models.DateField(null=True, blank=True)
     duration_months = models.PositiveIntegerField(default=12)
+    repayment_frequency = models.CharField(
+        max_length=10,
+        choices=[
+            ('monthly', 'Monthly'),
+            ('weekly', 'Weekly'),
+        ],
+        default='monthly',
+        help_text='Repayment frequency (monthly or weekly)',
+    )
     
     # Payment Tracking
     amount_paid_principal = models.DecimalField(
