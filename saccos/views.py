@@ -44,8 +44,17 @@ class SaccoOrganizationViewSet(viewsets.ModelViewSet):
         if user.is_superuser or user.role == 'Admin':
             return SaccoOrganization.objects.all()
         
-        # SACCO admins see only their SACCOs
-        return user.administered_saccos.all()
+        # SACCO admins see SACCOs they administer
+        saccos = user.administered_saccos.all()
+
+        # Regular members should also be able to retrieve their SACCO
+        # This mirrors the logic in the my_saccos action
+        if hasattr(user, 'sacco_membership'):
+            member_sacco = user.sacco_membership.sacco
+            if member_sacco not in saccos:
+                saccos = saccos | SaccoOrganization.objects.filter(id=member_sacco.id)
+
+        return saccos
     
     @action(detail=False, methods=['get'], url_path='my-saccos')
     def my_saccos(self, request):
