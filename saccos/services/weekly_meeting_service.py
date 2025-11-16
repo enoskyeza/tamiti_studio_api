@@ -360,3 +360,80 @@ class WeeklyMeetingService:
                 for c in contributions
             ]
         }
+    
+    @staticmethod
+    @transaction.atomic
+    def reset_finalized_meeting(meeting, reset_by):
+        """
+        Undo the effects of finalizing a meeting
+        
+        Reverses:
+        - All weekly contributions
+        - All passbook entries created during finalization
+        - SACCO account transaction
+        - Cash round schedule advancement
+        - Meeting status back to in_progress
+        
+        Args:
+            meeting: WeeklyMeeting instance
+            reset_by: User performing the reset
+            
+        Returns:
+            dict with reset summary
+        """
+        from saccos.models import PassbookEntry, WeeklyContribution
+        from finance.models import Transaction
+        
+        if meeting.status != 'completed':
+            raise ValueError(f"Cannot reset meeting with status: {meeting.status}")
+        
+        # 1. Delete all weekly contributions for this meeting
+        contributions = WeeklyContribution.objects.filter(meeting=meeting)
+        contributions_count = contributions.count()
+        contributions.delete()
+        
+        # 2. Delete all passbook entries linked to this meeting
+        passbook_entries = PassbookEntry.objects.filter(meeting=meeting)
+        entries_count = passbook_entries.count()
+        passbook_entries.delete()
+        
+        # 3. Delete SACCO account transaction for this meeting
+        # Find transaction by description pattern matching
+        try:
+            sacco_account = meeting.sacco.get_or_create_account()
+            transactions = Transaction.objects.filter(
+                account=sacco_account.account,
+                date=meeting.meeting_date,
+                description__icontains=f"Week {meeting.week_number}"
+            )
+            transactions_count = transactions.count()
+            transactions.delete()
+        except Exception as e:
+            # Log but don't fail if SACCO account transaction cleanup fails
+            print(f"Warning: Could not delete SACCO account transaction: {e}")
+            transactions_count = 0
+        
+        # 4. Roll back cash round schedule to previous position
+        schedule = meeting.sacco.cash_round_schedules.filter(is_active=True).first()
+        if schedule and schedule.rotation_order:
+            # Move back one position
+            schedule.current_position = (schedule.current_position - 1) % len(schedule.rotation_order)
+            schedule.save()
+        
+        # 5. Reset meeting status and clear completion timestamp
+        meeting.status = 'in_progress'
+        meeting.completed_at = None
+        meeting.save()
+        
+        # 6. Recalculate totals (will be zero since contributions are deleted)
+        meeting.calculate_totals()
+        
+        return {
+            'success': True,
+            'meeting_id': meeting.id,
+            'contributions_deleted': contributions_count,
+            'passbook_entries_deleted': entries_count,
+            'sacco_transactions_deleted': transactions_count,
+            'status': meeting.status,
+            'message': f'Meeting Week {meeting.week_number} has been reset successfully'
+        }

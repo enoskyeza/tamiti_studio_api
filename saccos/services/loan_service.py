@@ -21,7 +21,8 @@ class LoanService:
         duration_months,
         purpose,
         repayment_frequency='monthly',
-        guarantor_ids=None
+        guarantor_ids=None,
+        application_date=None
     ):
         """
         Create a new loan application
@@ -34,6 +35,7 @@ class LoanService:
             duration_months: Loan duration in months
             purpose: Reason for loan
             guarantor_ids: List of guarantor member IDs
+            application_date: Optional application date (defaults to today)
             
         Returns:
             SaccoLoan instance
@@ -43,6 +45,12 @@ class LoanService:
         # Generate loan number
         loan_count = SaccoLoan.objects.filter(sacco=sacco).count()
         loan_number = f"{sacco.registration_number or 'LOAN'}-{loan_count + 1:05d}"
+        
+        # Use provided application date or default to today
+        if not application_date:
+            application_date = timezone.now().date()
+        elif isinstance(application_date, str):
+            application_date = parse_date(application_date) or timezone.now().date()
         
         # Create loan
         loan = SaccoLoan(
@@ -54,7 +62,7 @@ class LoanService:
             duration_months=duration_months,
             repayment_frequency=repayment_frequency,
             purpose=purpose,
-            application_date=timezone.now().date(),
+            application_date=application_date,
             status='pending'
         )
         

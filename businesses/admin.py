@@ -99,11 +99,14 @@ class EnterpriseConfigurationAdmin(admin.ModelAdmin):
 class StockItemAdmin(admin.ModelAdmin):
     list_display = [
         'name', 'enterprise', 'sku', 'quantity_on_hand', 
-        'cost_price', 'selling_price', 'is_low_stock', 'is_active'
+        'cost_price', 'selling_price', 'is_pack_item', 'is_low_stock', 'is_active'
     ]
     list_filter = ['enterprise', 'category', 'is_active']
     search_fields = ['name', 'sku', 'description', 'barcode']
-    readonly_fields = ['uuid', 'created_at', 'updated_at', 'total_value', 'profit_margin']
+    readonly_fields = [
+        'uuid', 'created_at', 'updated_at', 'total_value', 'profit_margin',
+        'is_pack_item', 'unit_cost_from_pack', 'pack_revenue', 'pack_profit', 'pack_profit_margin'
+    ]
     
     fieldsets = (
         ('Enterprise', {
@@ -112,8 +115,16 @@ class StockItemAdmin(admin.ModelAdmin):
         ('Product Information', {
             'fields': ('sku', 'name', 'description', 'category', 'barcode')
         }),
-        ('Pricing', {
-            'fields': ('cost_price', 'selling_price', 'profit_margin')
+        ('Unit Pricing (for items bought individually)', {
+            'fields': ('cost_price', 'selling_price', 'profit_margin'),
+            'description': 'Use these fields for items bought and sold individually. Leave cost_price blank if using pack pricing below.'
+        }),
+        ('Pack/Bulk Pricing (for items bought in cartons/crates)', {
+            'fields': (
+                'pack_size', 'pack_cost_price', 'pack_selling_price',
+                'is_pack_item', 'unit_cost_from_pack', 'pack_revenue', 'pack_profit', 'pack_profit_margin'
+            ),
+            'description': 'Use these fields for items bought in bulk (e.g., sodas in crates). Enter pack_size and pack_cost_price, then enter selling_price above for unit sales.'
         }),
         ('Inventory', {
             'fields': ('quantity_on_hand', 'reorder_level', 'reorder_quantity', 'unit_of_measure')
@@ -131,6 +142,11 @@ class StockItemAdmin(admin.ModelAdmin):
         return obj.is_low_stock
     is_low_stock.boolean = True
     is_low_stock.short_description = 'Low Stock'
+    
+    def is_pack_item(self, obj):
+        return obj.is_pack_item
+    is_pack_item.boolean = True
+    is_pack_item.short_description = 'Pack Item'
 
 
 @admin.register(StockMovement)

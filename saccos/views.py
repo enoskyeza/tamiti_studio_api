@@ -536,7 +536,7 @@ class CashRoundViewSet(viewsets.ModelViewSet):
         - Admins see all rounds in their SACCO
         - Regular members see only rounds they're part of
         """
-        queryset = CashRound.objects.all().prefetch_related('round_members__member__user')
+        queryset = CashRound.objects.all().prefetch_related('round_members__member__user').select_related('schedule')
         
         # Get SACCO context
         sacco_id = self.kwargs.get('sacco_pk') or self.request.query_params.get('sacco')
@@ -552,11 +552,12 @@ class CashRoundViewSet(viewsets.ModelViewSet):
             return CashRound.objects.none()
         
         # Role-based filtering
-        # Check if user is admin (chairperson or treasurer)
+        # Check if user is admin (chairperson, treasurer, or secretary)
         is_admin = False
         if hasattr(self.request.user, 'sacco_membership') and sacco:
             member = self.request.user.sacco_membership
-            is_admin = member.role in ['chairperson', 'treasurer']
+            role = (member.role or '').lower()
+            is_admin = role in ['chairperson', 'treasurer', 'secretary']
         
         # If not admin, filter to only rounds the user is part of
         if not is_admin:
@@ -914,6 +915,28 @@ class WeeklyMeetingViewSet(viewsets.ModelViewSet):
         summary = WeeklyMeetingService.get_meeting_summary(meeting)
         
         return Response(summary)
+    
+    @action(detail=True, methods=['post'])
+    def reset(self, request, pk=None):
+        """Reset a finalized meeting (secretary only)"""
+        from saccos.services.weekly_meeting_service import WeeklyMeetingService
+        
+        meeting = self.get_object()
+        
+        try:
+            result = WeeklyMeetingService.reset_finalized_meeting(
+                meeting=meeting,
+                reset_by=request.user
+            )
+            
+            serializer = self.get_serializer(meeting)
+            return Response({
+                'meeting': serializer.data,
+                **result
+            })
+        
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class WeeklyContributionViewSet(viewsets.ModelViewSet):
@@ -926,7 +949,12 @@ class WeeklyContributionViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        """Filter contributions by meeting"""
+        """Filter contributions by meeting for list views"""
+        # For detail operations (retrieve, update, delete), allow access to all
+        if self.action in ['retrieve', 'update', 'partial_update', 'destroy']:
+            return WeeklyContribution.objects.all()
+        
+        # For list operations, filter by meeting
         meeting_id = self.request.query_params.get('meeting')
         
         if meeting_id:
@@ -935,7 +963,26 @@ class WeeklyContributionViewSet(viewsets.ModelViewSet):
         return WeeklyContribution.objects.none()
     
     def perform_create(self, serializer):
-        """Save and recalculate deductions"""
+        """Save and recalculate deductions, ensuring member is in the cash round"""
+        from rest_framework.exceptions import ValidationError
+        
+        # Get the meeting and member from validated data
+        meeting = serializer.validated_data.get('meeting')
+        member = serializer.validated_data.get('member')
+        
+        # If meeting has a cash round, verify member is in that cash round
+        if meeting and meeting.cash_round and member:
+            is_in_round = CashRoundMember.objects.filter(
+                cash_round=meeting.cash_round,
+                member=member,
+                is_active=True
+            ).exists()
+            
+            if not is_in_round:
+                raise ValidationError({
+                    'member': f'This member is not part of the cash round for this meeting'
+                })
+        
         contribution = serializer.save()
         
         if contribution.is_recipient:
@@ -944,6 +991,14 @@ class WeeklyContributionViewSet(viewsets.ModelViewSet):
         
         # Recalculate meeting totals
         contribution.meeting.calculate_totals()
+    
+    def perform_destroy(self, instance):
+        """Delete contribution and recalculate meeting totals"""
+        meeting = instance.meeting
+        instance.delete()
+        
+        # Recalculate meeting totals after deletion
+        meeting.calculate_totals()
 
 
 # ============================================================================
@@ -1010,6 +1065,7 @@ class SaccoLoanViewSet(viewsets.ModelViewSet):
         purpose = serializer.validated_data['purpose']
         repayment_frequency = serializer.validated_data.get('repayment_frequency', 'monthly')
         guarantor_ids = self.request.data.get('guarantor_ids') or None
+        application_date = self.request.data.get('application_date') or None
         
         loan = LoanService.create_loan_application(
             sacco=sacco,
@@ -1020,6 +1076,7 @@ class SaccoLoanViewSet(viewsets.ModelViewSet):
             purpose=purpose,
             repayment_frequency=repayment_frequency,
             guarantor_ids=guarantor_ids,
+            application_date=application_date,
         )
         
         serializer.instance = loan

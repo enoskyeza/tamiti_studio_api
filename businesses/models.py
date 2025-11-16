@@ -160,13 +160,13 @@ class StockItem(BaseModel):
     description = models.TextField(blank=True)
     category = models.CharField(max_length=100, blank=True)
     
-    # Pricing
+    # Unit Pricing (for items bought/sold individually)
     cost_price = models.DecimalField(
         max_digits=15,
         decimal_places=2,
         null=True,
         blank=True,
-        help_text="Cost per unit (what we pay)"
+        help_text="Cost per unit (only for items bought individually, NOT for pack items)"
     )
     selling_price = models.DecimalField(
         max_digits=15,
@@ -174,6 +174,27 @@ class StockItem(BaseModel):
         null=True,
         blank=True,
         help_text="Selling price per unit"
+    )
+    
+    # Pack/Bulk Pricing (for items bought in bulk/cartons)
+    pack_size = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Number of units in a pack/crate/carton (e.g., 12 for a crate of sodas)"
+    )
+    pack_cost_price = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Cost of entire pack/crate (e.g., 10,000 for crate of 12 sodas)"
+    )
+    pack_selling_price = models.DecimalField(
+        max_digits=15,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Selling price for whole pack (leave blank if selling by unit only)"
     )
     
     # Inventory
@@ -219,9 +240,13 @@ class StockItem(BaseModel):
     @property
     def total_value(self):
         """Calculate total inventory value at cost"""
-        if self.cost_price is None:
-            return Decimal('0')
-        return self.quantity_on_hand * self.cost_price
+        if self.is_pack_item:
+            # For pack items, use pack-based cost calculation
+            return self.calculate_cost_for_quantity(self.quantity_on_hand)
+        elif self.cost_price is not None:
+            # For regular items, use unit cost
+            return self.quantity_on_hand * self.cost_price
+        return Decimal('0')
     
     @property
     def potential_revenue(self):
@@ -238,6 +263,70 @@ class StockItem(BaseModel):
         if self.selling_price == 0:
             return Decimal('0')
         return ((self.selling_price - self.cost_price) / self.selling_price) * 100
+    
+    @property
+    def is_pack_item(self):
+        """Check if this is a pack-based item (bought in bulk)"""
+        return bool(self.pack_size and self.pack_cost_price)
+    
+    @property
+    def unit_cost_from_pack(self):
+        """Calculate unit cost from pack cost (for pack items only)"""
+        if self.is_pack_item:
+            return self.pack_cost_price / self.pack_size
+        return Decimal('0')
+    
+    @property
+    def pack_revenue(self):
+        """Total revenue from selling one complete pack"""
+        if not self.is_pack_item:
+            return Decimal('0')
+        
+        if self.pack_selling_price:
+            # Selling whole pack at a set price
+            return self.pack_selling_price
+        elif self.selling_price and self.pack_size:
+            # Selling by unit: revenue = unit_price × pack_size
+            return self.selling_price * self.pack_size
+        return Decimal('0')
+    
+    @property
+    def pack_profit(self):
+        """Profit from selling one complete pack (ACCURATE - no rounding errors)"""
+        if self.is_pack_item:
+            return self.pack_revenue - self.pack_cost_price
+        return Decimal('0')
+    
+    @property
+    def pack_profit_margin(self):
+        """Calculate profit margin percentage for pack items"""
+        if not self.is_pack_item or self.pack_revenue == 0:
+            return Decimal('0')
+        return (self.pack_profit / self.pack_revenue) * 100
+    
+    def calculate_cost_for_quantity(self, quantity):
+        """
+        Calculate cost for a specific quantity of units sold.
+        
+        For pack items: Uses pack-level calculation (NO rounding errors)
+        For unit items: Uses simple unit cost
+        """
+        if self.is_pack_item:
+            # Pack-based calculation: (pack_cost / pack_size) × quantity
+            # Decimals only appear in final calculation, not stored
+            return (self.pack_cost_price / self.pack_size) * quantity
+        else:
+            # Simple unit-based calculation
+            return (self.cost_price or Decimal('0')) * quantity
+    
+    def calculate_profit_for_quantity(self, quantity):
+        """Calculate profit for a specific quantity of units sold."""
+        if not self.selling_price:
+            return Decimal('0')
+        
+        revenue = self.selling_price * quantity
+        cost = self.calculate_cost_for_quantity(quantity)
+        return revenue - cost
 
 
 class StockMovement(BaseModel):

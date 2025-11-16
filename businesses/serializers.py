@@ -91,21 +91,35 @@ class StockItemSerializer(serializers.ModelSerializer):
     total_value = serializers.ReadOnlyField()
     potential_revenue = serializers.ReadOnlyField()
     profit_margin = serializers.ReadOnlyField()
+    # Pack pricing calculated fields
+    is_pack_item = serializers.ReadOnlyField()
+    unit_cost_from_pack = serializers.ReadOnlyField()
+    pack_revenue = serializers.ReadOnlyField()
+    pack_profit = serializers.ReadOnlyField()
+    pack_profit_margin = serializers.ReadOnlyField()
     
     class Meta:
         model = StockItem
         fields = [
             'id', 'uuid', 'enterprise', 'enterprise_name',
             'sku', 'name', 'description', 'category',
+            # Unit pricing
             'cost_price', 'selling_price',
+            # Pack/Bulk pricing
+            'pack_size', 'pack_cost_price', 'pack_selling_price',
+            # Inventory
             'quantity_on_hand', 'reorder_level', 'reorder_quantity',
             'unit_of_measure', 'barcode', 'is_active',
+            # Calculated fields
             'is_low_stock', 'total_value', 'potential_revenue', 'profit_margin',
+            'is_pack_item', 'unit_cost_from_pack', 'pack_revenue', 'pack_profit', 'pack_profit_margin',
             'created_at', 'updated_at'
         ]
         read_only_fields = [
             'uuid', 'enterprise_name', 'is_low_stock', 'total_value',
-            'potential_revenue', 'profit_margin', 'created_at', 'updated_at'
+            'potential_revenue', 'profit_margin',
+            'is_pack_item', 'unit_cost_from_pack', 'pack_revenue', 'pack_profit', 'pack_profit_margin',
+            'created_at', 'updated_at'
         ]
 
 
