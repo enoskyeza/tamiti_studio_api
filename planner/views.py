@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, time, date
 from typing import List, Tuple
 
@@ -24,6 +25,9 @@ from planner.serializers import (
     WorkGoalSerializer, ProductivityInsightSerializer
 )
 from planner.services import SmartScheduler, ProductivityAnalyzer, SmartRescheduler
+
+
+logger = logging.getLogger(__name__)
 
 
 def _preview_schedule(user, scope: str, date_str: str) -> dict:
@@ -289,26 +293,38 @@ def schedule_preview(request):
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def schedule_commit(request):
+    """Commit a schedule preview to create actual time blocks"""
     scope = request.data.get('scope', 'day')
     date_str = request.data.get('date')
-    print(f"🔥 COMMIT API DEBUG - User: {request.user.username}, Date: {date_str}")
+    use_smart = request.data.get('smart', True)
     
     if not date_str:
         return Response({'error': 'date is required'}, status=status.HTTP_400_BAD_REQUEST)
+    
     try:
-        data = _preview_schedule(request.user, scope, date_str)
+        target_date = parse_date(date_str)
+        if not target_date:
+            raise ValueError("Invalid date format")
+        
+        # Use the SAME algorithm as preview to ensure consistency
+        if use_smart:
+            scheduler = SmartScheduler(request.user)
+            data = scheduler.generate_optimized_schedule(scope, target_date)
+        else:
+            # Fallback to legacy algorithm (maintained for compatibility)
+            data = _preview_schedule(request.user, scope, date_str)
+            
     except ValueError:
         return Response({'error': 'invalid date format (YYYY-MM-DD)'}, status=status.HTTP_400_BAD_REQUEST)
+    
     blocks = data.get('blocks', [])
-    print(f"🔥 Blocks to create: {len(blocks)}")
     
     created = []
     from django.utils.dateparse import parse_datetime
-    for i, b in enumerate(blocks):
+    
+    for b in blocks:
         start_dt = parse_datetime(b['start']) if isinstance(b['start'], str) else b['start']
         end_dt = parse_datetime(b['end']) if isinstance(b['end'], str) else b['end']
-        
-        print(f"🔥 Creating block {i+1}: {b['title']}, start: {start_dt}, end: {end_dt}")
         
         tb = TimeBlock.objects.create(
             owner_user=request.user,
@@ -321,9 +337,7 @@ def schedule_commit(request):
             source='auto'
         )
         created.append(tb)
-        print(f"🔥 Created TimeBlock ID: {tb.id}")
     
-    print(f"🔥 Total created blocks: {len(created)}")
     return Response(TimeBlockSerializer(created, many=True).data, status=201)
 
 
@@ -360,18 +374,14 @@ class BlockListView(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
-        print(f"🔍 BlockListView DEBUG - User: {user.username}")
+        logger.debug(f"BlockListView - User: {user.username}")
         
         qs = TimeBlock.objects.filter(owner_user=user)
-        print(f"🔍 Initial queryset count: {qs.count()}")
-        
-        # Print all blocks for this user
-        all_blocks = list(qs.values('id', 'title', 'start', 'end', 'status'))
-        print(f"🔍 All user blocks: {all_blocks}")
+        logger.debug(f"Initial queryset count: {qs.count()}")
         
         start = self.request.query_params.get('start')
         end = self.request.query_params.get('end')
-        print(f"🔍 Query params - start: {start}, end: {end}")
+        logger.debug(f"Query params - start: {start}, end: {end}")
         
         if start:
             from django.utils.dateparse import parse_datetime, parse_date
@@ -384,10 +394,10 @@ class BlockListView(generics.ListAPIView):
                 date_obj = parse_date(start)
                 if date_obj:
                     s = timezone.make_aware(datetime.combine(date_obj, time.min), ZoneInfo("UTC"))
-            print(f"🔍 Parsed start datetime: {s}")
+            logger.debug(f"Parsed start datetime: {s}")
             if s:
                 qs = qs.filter(start__gte=s)
-                print(f"🔍 After start filter count: {qs.count()}")
+                logger.debug(f"After start filter count: {qs.count()}")
         if end:
             from django.utils.dateparse import parse_datetime, parse_date
             from django.utils import timezone
@@ -399,13 +409,12 @@ class BlockListView(generics.ListAPIView):
                 date_obj = parse_date(end)
                 if date_obj:
                     e = timezone.make_aware(datetime.combine(date_obj, time(23, 59, 59)), ZoneInfo("UTC"))
-            print(f"🔍 Parsed end datetime: {e}")
+            logger.debug(f"Parsed end datetime: {e}")
             if e:
                 qs = qs.filter(start__lte=e)
-                print(f"🔍 After end filter count: {qs.count()}")
+                logger.debug(f"After end filter count: {qs.count()}")
         
-        final_blocks = list(qs.values('id', 'title', 'start', 'end', 'status'))
-        print(f"🔍 Final filtered blocks: {final_blocks}")
+        logger.debug(f"Final queryset count: {qs.count()}")
         
         return qs.order_by('start')
 
@@ -423,7 +432,25 @@ class CalendarEventListCreateView(generics.ListCreateAPIView):
     serializer_class = CalendarEventSerializer
 
     def get_queryset(self):
-        return CalendarEvent.objects.filter(owner_user=self.request.user)
+        qs = CalendarEvent.objects.filter(owner_user=self.request.user)
+        
+        # Apply filtering by date range if provided
+        start = self.request.query_params.get('start')
+        end = self.request.query_params.get('end')
+        
+        if start:
+            from django.utils.dateparse import parse_datetime
+            start_dt = parse_datetime(start)
+            if start_dt:
+                qs = qs.filter(start__gte=start_dt)
+        
+        if end:
+            from django.utils.dateparse import parse_datetime
+            end_dt = parse_datetime(end)
+            if end_dt:
+                qs = qs.filter(start__lte=end_dt)
+        
+        return qs.order_by('start')
 
     def perform_create(self, serializer):
         serializer.save(owner_user=self.request.user)
