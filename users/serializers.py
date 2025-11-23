@@ -32,6 +32,17 @@ class UserSerializer(serializers.ModelSerializer):
             "is_superuser",
             "is_staff",
         ]
+        read_only_fields = [
+            "is_verified",
+            "role",
+            "total_tasks_completed",
+            "last_seen",
+            "streak_days",
+            "current_streak_started",
+            "preferences",
+            "is_superuser",
+            "is_staff",
+        ]
 
 
 class RegisterSerializer(serializers.ModelSerializer):
