@@ -23,6 +23,7 @@ from common.enums import (
     FinanceScope, PersonalExpenseCategory, PersonalIncomeSource,
     TransactionType, AccountType, BudgetPeriod
 )
+from common.enums import PaymentCategory
 
 User = get_user_model()
 
@@ -720,6 +721,9 @@ class InvoiceCreateUpdateSerializer(serializers.ModelSerializer):
 
 
 class PaymentCreateSerializer(serializers.ModelSerializer):
+    # Optional payment date applied to the linked Transaction, not the Payment model itself
+    date = serializers.DateField(required=False, allow_null=True, write_only=True)
+
     class Meta:
         model = Payment
         fields = ['amount', 'account', 'method', 'date', 'notes']
@@ -728,6 +732,90 @@ class PaymentCreateSerializer(serializers.ModelSerializer):
         invoice = self.context['invoice']
         user = self.context['request'].user if self.context.get('request') else None
         return FinanceService.record_invoice_payment(invoice=invoice, created_by=user, **validated_data)
+
+
+class GoalPaymentCreateSerializer(serializers.ModelSerializer):
+    """Serializer for recording a payment directly against a company Goal.
+
+    Creates both a Payment (linked to the goal) and a corresponding Transaction,
+    then updates the goal's aggregated progress.
+    """
+
+    # Restrict selectable accounts to company-scope accounts
+    account = serializers.PrimaryKeyRelatedField(
+        queryset=Account.objects.filter(scope=FinanceScope.COMPANY),
+        required=False,
+        allow_null=True,
+    )
+
+    class Meta:
+        model = Payment
+        fields = ['amount', 'account', 'method', 'notes']
+
+    def validate_amount(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('Amount must be greater than zero')
+        return value
+
+    def create(self, validated_data):
+        goal: Goal = self.context['goal']
+
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+
+        # Prefer an existing internal Party mapped to the goal owner, or create one
+        owner = goal.owner
+        party = Party.objects.filter(user=owner).first()
+        if not party:
+            name = getattr(owner, 'get_full_name', None)() or getattr(owner, 'username', str(owner.id))
+            email = getattr(owner, 'email', '') or ''
+            party = Party.objects.create(
+                name=name,
+                email=email,
+                phone='',
+                type=PartyType.INTERNAL,
+                is_internal_user=True,
+                user=owner,
+            )
+
+        amount = validated_data['amount']
+        account = validated_data.get('account')
+        method = validated_data.get('method') or 'cash'
+        notes = validated_data.get('notes', '') or ''
+
+        # Record payment against the goal
+        payment = Payment.objects.create(
+            direction='incoming',
+            amount=amount,
+            party=party,
+            goal=goal,
+            account=account,
+            method=method,
+            notes=notes,
+        )
+
+        # Create linked company transaction - always mark purpose as goal-related
+        base_description = f"Goal: {goal.title}"
+        if notes:
+            description = f"{base_description} - {notes}"
+        else:
+            description = base_description
+
+        tx = Transaction.objects.create(
+            type=TransactionType.INCOME,
+            amount=amount,
+            description=description,
+            account=account,
+            category=PaymentCategory.MISC,
+            related_payment=payment,
+        )
+        payment.transaction = tx
+        payment.save(update_fields=['transaction'])
+
+        # Sync goal's aggregated amount and milestones
+        goal.update_progress()
+
+        return payment
 
 
 class UnpaidInvoiceSerializer(serializers.ModelSerializer):

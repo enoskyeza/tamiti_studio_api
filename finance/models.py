@@ -653,11 +653,14 @@ class PersonalSavingsGoal(BaseModel):
         self.save()
 
         if create_transaction:
+            account = self.user.account_set.filter(scope=FinanceScope.PERSONAL).first()
+            if not account:
+                raise ValidationError({'account': 'Create at least one personal account before adding contributions.'})
             PersonalTransaction.objects.create(
                 user=self.user,
                 type=TransactionType.EXPENSE,
                 amount=amount,
-                account=self.user.account_set.filter(scope=FinanceScope.PERSONAL).first(),
+                account=account,
                 expense_category=PersonalExpenseCategory.SAVINGS,
                 description=f"Savings for: {self.name}",
                 reason=description,

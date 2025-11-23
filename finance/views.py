@@ -250,6 +250,34 @@ class GoalViewSet(BaseModelViewSet):
             "percentage": round((goal.current_amount / goal.target_amount) * 100, 2) if goal.target_amount else 0,
         })
 
+    @action(detail=True, methods=['post'])
+    def add_payment(self, request, pk=None):
+        """Record a payment towards this company goal and update its progress."""
+        goal = self.get_object()
+
+        serializer = GoalPaymentCreateSerializer(
+            data=request.data,
+            context={
+                'goal': goal,
+                'request': request,
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+        payment = serializer.save()
+
+        goal.refresh_from_db()
+
+        return Response(
+            {
+                'message': 'Payment recorded successfully',
+                'payment_id': payment.id,
+                'current': goal.current_amount,
+                'target': goal.target_amount,
+                'percentage': round((goal.current_amount / goal.target_amount) * 100, 2) if goal.target_amount else 0,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
 
 class GoalMilestoneViewSet(BaseModelViewSet):
     queryset = GoalMilestone.objects.select_related('goal')
@@ -723,29 +751,20 @@ class PersonalSavingsGoalViewSet(BaseModelViewSet):
     def add_contribution(self, request, pk=None):
         """Add a contribution to the savings goal"""
         goal = self.get_object()
-        amount = request.data.get('amount')
+        serializer = PersonalSavingsContributionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        if not amount:
-            return Response(
-                {'error': 'Amount is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        amount = serializer.validated_data['amount']
+        description = serializer.validated_data.get('description', "Manual contribution")
 
         try:
-            amount = Decimal(str(amount))
-            if amount <= 0:
-                return Response(
-                    {'error': 'Amount must be positive'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        except (ValueError, TypeError):
-            return Response(
-                {'error': 'Invalid amount format'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            goal.add_contribution(amount, description=description, create_transaction=True)
+        except ValidationError as exc:
+            # Surface model validation errors (e.g. missing personal account)
+            detail = getattr(exc, 'message_dict', None) or getattr(exc, 'message', None) or str(exc)
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
 
-        goal.current_amount += amount
-        goal.save(update_fields=['current_amount'])
+        goal.refresh_from_db()
 
         return Response({
             'message': 'Contribution added successfully',
