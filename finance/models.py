@@ -393,6 +393,9 @@ class Receipt(BaseModel):
     notes = models.TextField(blank=True)
     payment = models.OneToOneField('Payment', null=True, blank=True, on_delete=models.SET_NULL, related_name='receipt')
 
+    class Meta:
+        ordering = ('-date', '-created_at')
+
     def __str__(self):
         return f"Receipt {self.number or self.id} - {self.party.name}"
 
