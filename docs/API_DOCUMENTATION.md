@@ -448,6 +448,8 @@ GET /api/finance/personal/dashboard/
   "accounts_count": 3,
   "monthly_income": "3000.00",
   "monthly_expenses": "1800.00",
+  "monthly_expenses_excluding_charges": "1750.00",
+  "monthly_transaction_charges": "50.00",
   "net_monthly": "1200.00",
   "active_budgets": 5,
   "active_savings_goals": 2,

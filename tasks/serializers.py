@@ -33,6 +33,7 @@ class TaskSerializer(serializers.ModelSerializer):
     assigned_users_names = serializers.SerializerMethodField()
     assigned_teams_names = serializers.SerializerMethodField()
     dependencies_titles = serializers.SerializerMethodField()
+    domain = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -46,7 +47,7 @@ class TaskSerializer(serializers.ModelSerializer):
             'position', 'is_completed', 'completed_at', 'is_hard_due', 'parent', 'parent_title',
             'context_energy', 'context_location', 'recurrence_rule',
             'created_at', 'updated_at', 'createdAt', 'updatedAt', 'is_overdue',
-            'assigned_users_names', 'assigned_teams_names', 'dependencies_titles'
+            'assigned_users_names', 'assigned_teams_names', 'dependencies_titles', 'domain'
         )
         read_only_fields = ('created_at', 'updated_at', 'completed_at')
 
@@ -65,6 +66,29 @@ class TaskSerializer(serializers.ModelSerializer):
     def get_dependencies_titles(self, obj):
         """Return dependencies as list of task titles"""
         return [dep.title for dep in obj.dependencies.all()]
+
+    def get_domain(self, obj):
+        """Return 'professional' or 'personal' for task domain.
+
+        - Any task linked to a project is treated as professional.
+        - Otherwise, if it was converted from a backlog item whose source is WORK or CLIENT,
+          treat it as professional.
+        - All other tasks default to personal.
+        """
+        # Project-based tasks are professional
+        if obj.project_id:
+            return 'professional'
+
+        # Check if this task was created from a backlog item with a professional-like source
+        try:
+            backlog_item = obj.source_backlog_item.all().first()
+        except Exception:
+            backlog_item = None
+
+        if backlog_item and backlog_item.source in (BacklogItem.Source.WORK, BacklogItem.Source.CLIENT):
+            return 'professional'
+
+        return 'personal'
 
 
 class TaskCreateSerializer(TaggitSerializer, serializers.ModelSerializer):

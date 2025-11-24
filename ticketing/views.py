@@ -13,6 +13,7 @@ from django.utils.decorators import method_decorator
 import logging
 import json
 
+from core.api import AppContextLoggingPermission
 from .models import (
     Event, EventMembership, BatchMembership,
     TicketType, Batch, Ticket, ScanLog, BatchExport, TemporaryUser,
@@ -31,6 +32,10 @@ from .serializers import (
 logger = logging.getLogger(__name__)
 
 
+class TicketingScopedMixin:
+    context = "ticketing"
+
+
 def get_client_ip(request):
     """Get client IP address from request"""
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
@@ -41,11 +46,11 @@ def get_client_ip(request):
     return ip
 
 
-class EventViewSet(viewsets.ModelViewSet):
+class EventViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing events"""
     queryset = Event.objects.all()
     serializer_class = EventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_queryset(self):
         queryset = Event.objects.all()
@@ -263,11 +268,11 @@ class EventViewSet(viewsets.ModelViewSet):
             return Response({'message': 'Batch manager removed successfully'})
 
 
-class TicketTypeViewSet(viewsets.ModelViewSet):
+class TicketTypeViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing ticket types"""
     queryset = TicketType.objects.all()
     serializer_class = TicketTypeSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_queryset(self):
         queryset = TicketType.objects.all()
@@ -277,10 +282,10 @@ class TicketTypeViewSet(viewsets.ModelViewSet):
         return queryset.filter(is_active=True).order_by('price')
 
 
-class BatchViewSet(viewsets.ModelViewSet):
+class BatchViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing ticket batches"""
     queryset = Batch.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_serializer_class(self):
         if self.action == 'create':
@@ -482,11 +487,11 @@ class BatchViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class TicketViewSet(viewsets.ModelViewSet):
+class TicketViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for viewing tickets"""
     queryset = Ticket.objects.all()
     serializer_class = TicketSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['status', 'batch']
     search_fields = ['short_code', 'buyer_name', 'buyer_phone', 'buyer_email']
@@ -818,11 +823,11 @@ class TicketViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-class ScanLogViewSet(viewsets.ReadOnlyModelViewSet):
+class ScanLogViewSet(TicketingScopedMixin, viewsets.ReadOnlyModelViewSet):
     """ViewSet for viewing scan logs"""
     queryset = ScanLog.objects.all()
     serializer_class = ScanLogSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_queryset(self):
         """Filter scan logs with optional parameters"""
@@ -947,9 +952,9 @@ class ScanLogViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(analytics)
 
 
-class TicketingUsersViewSet(viewsets.ViewSet):
+class TicketingUsersViewSet(TicketingScopedMixin, viewsets.ViewSet):
     """App-specific ViewSet for users and temporary users (for UserSelect component)"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def list(self, request):
         """Get combined list of users and temporary users for this app"""
@@ -1070,9 +1075,9 @@ class TicketingUsersViewSet(viewsets.ViewSet):
         return Response({'results': users_data})
 
 
-class DashboardViewSet(viewsets.ViewSet):
+class DashboardViewSet(TicketingScopedMixin, viewsets.ViewSet):
     """ViewSet for dashboard statistics"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     @action(detail=False, methods=['get'])
     def stats(self, request):
@@ -1108,11 +1113,11 @@ class DashboardViewSet(viewsets.ViewSet):
         return Response(serializer.data)
 
 
-class TemporaryUserViewSet(viewsets.ModelViewSet):
+class TemporaryUserViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """DEPRECATED: ViewSet for managing temporary users - use unified User model instead"""
     queryset = TemporaryUser.objects.all()
     serializer_class = TemporaryUserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['event', 'role', 'is_active']
     search_fields = ['username']
@@ -1190,10 +1195,10 @@ class TemporaryUserViewSet(viewsets.ModelViewSet):
 # Temporary user login endpoint removed - all users now use standard JWT authentication
 
 
-class TemporaryUserCreateViewSet(viewsets.ModelViewSet):
+class TemporaryUserCreateViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for creating temporary users with proper permission handling"""
     serializer_class = TemporaryUserCreateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     http_method_names = ['post']  # Only allow creation
     
     def get_queryset(self):

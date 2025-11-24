@@ -7,10 +7,16 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
 from django.db import models
+
+from core.api import AppContextLoggingPermission
 from .models import EventMembership, BatchMembership
 from .serializers import EventMembershipSerializer, BatchMembershipSerializer
 
 User = get_user_model()
+
+
+class TicketingScopedMixin:
+    context = "ticketing"
 
 
 def can_manage_event(user, event):
@@ -45,10 +51,10 @@ def can_manage_batch(user, batch):
     return False
 
 
-class EventMembershipViewSet(viewsets.ModelViewSet):
+class EventMembershipViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing event memberships"""
     serializer_class = EventMembershipSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_queryset(self):
         """Filter memberships based on user permissions"""
@@ -114,10 +120,10 @@ class EventMembershipViewSet(viewsets.ModelViewSet):
         })
 
 
-class BatchMembershipViewSet(viewsets.ModelViewSet):
+class BatchMembershipViewSet(TicketingScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing batch memberships"""
     serializer_class = BatchMembershipSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
     
     def get_queryset(self):
         """Filter batch memberships based on user permissions"""

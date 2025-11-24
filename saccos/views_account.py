@@ -7,8 +7,15 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from core.api import AppContextLoggingPermission
 
-class SaccoAccountViewSet(viewsets.ViewSet):
+
+class SaccoScopedMixin:
+    context = "sacco"
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
+
+
+class SaccoAccountViewSet(SaccoScopedMixin, viewsets.ViewSet):
     """
     ViewSet for SACCO Account management
     Handles creation, retrieval, and updates of SACCO financial accounts

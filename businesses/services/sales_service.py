@@ -95,13 +95,21 @@ class SalesService:
             # Line total
             line_total = line_after_discount + tax_amount
             
+            # Calculate unit cost (supports both regular and pack-based items)
+            if stock_item.is_pack_item:
+                # For pack items, calculate unit cost from pack price
+                unit_cost = stock_item.unit_cost_from_pack
+            else:
+                # For regular items, use cost_price
+                unit_cost = stock_item.cost_price or Decimal('0')
+            
             # Create sale item
             SaleItem.objects.create(
                 sale=sale,
                 stock_item=stock_item,
                 quantity=quantity,
                 unit_price=unit_price,
-                unit_cost=stock_item.cost_price or Decimal('0'),  # Use 0 if cost_price is None
+                unit_cost=unit_cost,
                 discount_amount=discount_amount,
                 discount_percentage=0,
                 tax_rate=tax_rate,

@@ -9,17 +9,23 @@ from django.utils import timezone
 from django.db.models import Sum, Count, F, DecimalField, Value, OuterRef, Subquery, Prefetch
 from django.db.models.functions import Coalesce
 from finance.models import *
-from common.enums import InvoiceDirection, FinanceScope
-from finance.services import FinanceService
+from common.enums import InvoiceDirection, FinanceScope, PartyType, PaymentMethod
+from finance.services import FinanceService, PersonalFinanceService, LINK_UNSET
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from finance.serializers import *
 from decimal import Decimal
 from datetime import datetime, timedelta
 from django.db.models import Q
+from core.api import AppContextLoggingPermission
+from django.core.exceptions import ValidationError
 
 
-class BaseModelViewSet(viewsets.ModelViewSet):
-    permission_classes = [permissions.IsAuthenticated]
+class StudioScopedMixin:
+    context = "studio"
+
+
+class BaseModelViewSet(StudioScopedMixin, viewsets.ModelViewSet):
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     ordering_fields = '__all__'
     # Do not set a global search_fields; define per-view to avoid DRF errors
@@ -65,14 +71,18 @@ class AccountViewSet(BaseModelViewSet):
         # Check if scope filtering is requested
         scope_filter = self.request.query_params.get('scope')
         
-        # Personal accounts - only show to owner
+        # Personal accounts - only show to owner (studio domain only)
         personal_accounts = Account.objects.filter(
             scope=FinanceScope.PERSONAL,
-            owner=user
+            owner=user,
+            domain="studio",
         )
         
-        # Company accounts - filter based on permissions
-        company_accounts = Account.objects.filter(scope=FinanceScope.COMPANY)
+        # Company accounts - filter based on permissions (studio domain only)
+        company_accounts = Account.objects.filter(
+            scope=FinanceScope.COMPANY,
+            domain="studio",
+        )
         
         # Filter company accounts based on permissions
         accessible_company_accounts = []
@@ -103,7 +113,8 @@ class AccountViewSet(BaseModelViewSet):
         
         filtered_company_accounts = Account.objects.filter(
             scope=FinanceScope.COMPANY,
-            id__in=accessible_company_accounts
+            domain="studio",
+            id__in=accessible_company_accounts,
         )
         
         # Apply scope filtering if requested
@@ -114,7 +125,10 @@ class AccountViewSet(BaseModelViewSet):
         else:
             # Return both if no scope filter specified (backward compatibility)
             accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + list(filtered_company_accounts.values_list('id', flat=True))
-            return Account.objects.filter(id__in=accessible_account_ids).order_by('scope', 'name')
+            return Account.objects.filter(
+                id__in=accessible_account_ids,
+                domain="studio",
+            ).order_by('scope', 'name')
 
 
 class InvoiceViewSet(BaseModelViewSet):
@@ -140,7 +154,7 @@ class InvoiceViewSet(BaseModelViewSet):
 
 
 class RequisitionViewSet(BaseModelViewSet):
-    queryset = Requisition.objects.select_related('requested_by', 'approved_by').prefetch_related('items', 'documents').all()
+    queryset = Requisition.objects.select_related('requested_by', 'approved_by').prefetch_related('items', 'documents').order_by('-created_at')
     serializer_class = RequisitionSerializer
     parser_classes = (MultiPartParser, FormParser, JSONParser)
     
@@ -169,7 +183,16 @@ class RequisitionViewSet(BaseModelViewSet):
         
         requisition.approve(request.user)
         return Response({'status': 'approved'})
-    
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        requisition = self.get_object()
+        if not requisition.can_approve(request.user):
+            return Response({'error': 'Permission denied'}, status=403)
+
+        requisition.reject(request.user)
+        return Response({'status': 'rejected'})
+
     @action(detail=True, methods=['post'])
     def upload_document(self, request, pk=None):
         requisition = self.get_object()
@@ -250,6 +273,110 @@ class GoalViewSet(BaseModelViewSet):
             "percentage": round((goal.current_amount / goal.target_amount) * 100, 2) if goal.target_amount else 0,
         })
 
+    @action(detail=True, methods=['post'])
+    def add_payment(self, request, pk=None):
+        """Record a payment towards this company goal and update its progress."""
+        goal = self.get_object()
+
+        serializer = GoalPaymentCreateSerializer(
+            data=request.data,
+            context={
+                'goal': goal,
+                'request': request,
+            },
+        )
+        serializer.is_valid(raise_exception=True)
+        payment = serializer.save()
+
+        goal.refresh_from_db()
+
+        return Response(
+            {
+                'message': 'Payment recorded successfully',
+                'payment_id': payment.id,
+                'current': goal.current_amount,
+                'target': goal.target_amount,
+                'percentage': round((goal.current_amount / goal.target_amount) * 100, 2) if goal.target_amount else 0,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['post'])
+    def link_transaction(self, request, pk=None):
+        """Link an existing company transaction to this goal.
+
+        If the transaction already has an associated Payment, reuse it and attach
+        the goal. If not, create a Payment linked to both the transaction and goal.
+        In all cases, enforce that a single transaction can contribute to at most
+        one goal at a time.
+        """
+        goal = self.get_object()
+        transaction_id = request.data.get('transaction_id')
+
+        if not transaction_id:
+            return Response({"detail": "transaction_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            tx = Transaction.objects.get(id=transaction_id)
+        except Transaction.DoesNotExist:
+            return Response({"detail": "Transaction not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Prefer an existing payment linked to this transaction, from either side
+        payment = getattr(tx, 'related_payment', None) or getattr(tx, 'linked_payment', None)
+
+        # If there's an existing payment already tied to a different goal, block reuse
+        if payment and payment.goal_id and payment.goal_id != goal.id:
+            return Response({"detail": "Transaction is already linked to another goal"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not payment:
+            # Create or reuse an internal Party for the goal owner
+            owner = goal.owner
+            party = Party.objects.filter(user=owner).first()
+            if not party:
+                name = getattr(owner, 'get_full_name', None)() or getattr(owner, 'username', str(owner.id))
+                email = getattr(owner, 'email', '') or ''
+                party = Party.objects.create(
+                    name=name,
+                    email=email,
+                    phone='',
+                    type=PartyType.INTERNAL,
+                    is_internal_user=True,
+                    user=owner,
+                )
+
+            # Use the transaction amount as the contribution tracked on the goal
+            payment = Payment.objects.create(
+                direction='incoming',
+                amount=tx.amount,
+                party=party,
+                goal=goal,
+                account=tx.account,
+                method=PaymentMethod.CASH,
+                notes=f"Linked from transaction #{tx.id}",
+            )
+
+            # Link both sides for consistency with invoice payment flows
+            tx.related_payment = payment
+            tx.save(update_fields=['related_payment'])
+            payment.transaction = tx
+            payment.save(update_fields=['transaction'])
+        else:
+            # Attach goal to existing payment if not already set
+            if payment.goal_id != goal.id:
+                payment.goal = goal
+                payment.save(update_fields=['goal'])
+
+        # Recalculate goal progress from all incoming payments
+        goal.update_progress()
+        goal.refresh_from_db()
+
+        return Response({
+            "goal_id": goal.id,
+            "current": goal.current_amount,
+            "target": goal.target_amount,
+            "percentage": round((goal.current_amount / goal.target_amount) * 100, 2) if goal.target_amount else 0,
+        })
+
 
 class GoalMilestoneViewSet(BaseModelViewSet):
     queryset = GoalMilestone.objects.select_related('goal')
@@ -271,13 +398,17 @@ class TransactionViewSet(BaseModelViewSet):
         permission_service = PermissionService()
         account_content_type = ContentType.objects.get_for_model(Account)
         
-        # Get accessible accounts (personal + permitted company accounts)
+        # Get accessible accounts (personal + permitted company accounts) in studio domain only
         personal_accounts = Account.objects.filter(
             scope=FinanceScope.PERSONAL,
-            owner=user
+            owner=user,
+            domain="studio",
         )
         
-        company_accounts = Account.objects.filter(scope=FinanceScope.COMPANY)
+        company_accounts = Account.objects.filter(
+            scope=FinanceScope.COMPANY,
+            domain="studio",
+        )
         accessible_company_accounts = []
         
         for account in company_accounts:
@@ -305,7 +436,7 @@ class TransactionViewSet(BaseModelViewSet):
         # Get all accessible account IDs
         accessible_account_ids = list(personal_accounts.values_list('id', flat=True)) + accessible_company_accounts
         
-        # Filter transactions by accessible accounts
+        # Filter transactions by accessible accounts (studio domain accounts only)
         return Transaction.objects.select_related('account').filter(
             account_id__in=accessible_account_ids
         ).order_by('-date', '-created_at', '-id')
@@ -490,7 +621,17 @@ class FinanceSummaryView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        income = Transaction.objects.filter(type='income').aggregate(
+        # Only include transactions for studio-domain accounts
+        income_qs = Transaction.objects.filter(
+            type='income',
+            account__domain="studio",
+        )
+        expense_qs = Transaction.objects.filter(
+            type='expense',
+            account__domain="studio",
+        )
+
+        income = income_qs.aggregate(
             total=Coalesce(
                 Sum('amount'),
                 Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
@@ -498,20 +639,34 @@ class FinanceSummaryView(APIView):
             )
         )['total'] or 0
 
-        expenses = Transaction.objects.filter(type='expense').aggregate(
+        # Base expense amounts (excluding charges)
+        expense_amount = expense_qs.aggregate(
             total=Coalesce(
                 Sum('amount'),
                 Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
                 output_field=DecimalField(max_digits=12, decimal_places=2)
             )
         )['total'] or 0
+
+        # Total transaction charges on expense transactions
+        expense_charges = expense_qs.aggregate(
+            total=Coalesce(
+                Sum('transaction_charge'),
+                Value(0, output_field=DecimalField(max_digits=12, decimal_places=2)),
+                output_field=DecimalField(max_digits=12, decimal_places=2)
+            )
+        )['total'] or 0
+
+        total_expenses = expense_amount + expense_charges
 
         pending_reqs = Requisition.objects.filter(status='pending').count()
 
         return Response({
             "total_income": income,
-            "total_expenses": expenses,
-            "net_balance": income - expenses,
+            "total_expenses": total_expenses,
+            "total_expenses_excluding_charges": expense_amount,
+            "total_transaction_charges": expense_charges,
+            "net_balance": income - total_expenses,
             "pending_requisitions": pending_reqs,
         })
 
@@ -720,32 +875,64 @@ class PersonalSavingsGoalViewSet(BaseModelViewSet):
         })
 
     @action(detail=True, methods=['post'])
+    def link_transaction(self, request, pk=None):
+        """Link an existing personal transaction to this savings goal."""
+        goal = self.get_object()
+        transaction_id = request.data.get('transaction_id')
+
+        if not transaction_id:
+            return Response({"detail": "transaction_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            tx = PersonalTransaction.objects.get(id=transaction_id, user=request.user)
+        except PersonalTransaction.DoesNotExist:
+            return Response({"detail": "Transaction not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if tx.linked_goal and tx.linked_goal_id != goal.id:
+            return Response({"detail": "Transaction is already linked to another goal"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            PersonalFinanceService.apply_transaction_linkages(
+                tx,
+                linked_invoice=LINK_UNSET,
+                linked_goal=goal,
+                linked_budget=LINK_UNSET,
+            )
+        except ValidationError as exc:
+            detail = getattr(exc, 'message_dict', None) or getattr(exc, 'message', None) or str(exc)
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
+
+        goal.refresh_from_db()
+        tx.refresh_from_db()
+
+        return Response({
+            'goal_id': goal.id,
+            'name': goal.name,
+            'target_amount': goal.target_amount,
+            'current_amount': goal.current_amount,
+            'remaining_amount': goal.remaining_amount,
+            'progress_percentage': goal.progress_percentage,
+            'is_achieved': goal.is_achieved,
+        })
+
+    @action(detail=True, methods=['post'])
     def add_contribution(self, request, pk=None):
         """Add a contribution to the savings goal"""
         goal = self.get_object()
-        amount = request.data.get('amount')
+        serializer = PersonalSavingsContributionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
 
-        if not amount:
-            return Response(
-                {'error': 'Amount is required'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        amount = serializer.validated_data['amount']
+        description = serializer.validated_data.get('description', "Manual contribution")
 
         try:
-            amount = Decimal(str(amount))
-            if amount <= 0:
-                return Response(
-                    {'error': 'Amount must be positive'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-        except (ValueError, TypeError):
-            return Response(
-                {'error': 'Invalid amount format'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            goal.add_contribution(amount, description=description, create_transaction=True)
+        except ValidationError as exc:
+            # Surface model validation errors (e.g. missing personal account)
+            detail = getattr(exc, 'message_dict', None) or getattr(exc, 'message', None) or str(exc)
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
 
-        goal.current_amount += amount
-        goal.save(update_fields=['current_amount'])
+        goal.refresh_from_db()
 
         return Response({
             'message': 'Contribution added successfully',
@@ -854,10 +1041,16 @@ class PersonalFinanceDashboardView(APIView):
             t.amount for t in transactions_this_month
             if t.type == 'income'
         )
-        monthly_expenses = sum(
-            t.amount + t.transaction_charge for t in transactions_this_month
+        # Split expenses into base amount and transaction charges for clearer reporting
+        monthly_expense_amount = sum(
+            t.amount for t in transactions_this_month
             if t.type == 'expense'
         )
+        monthly_expense_charges = sum(
+            t.transaction_charge for t in transactions_this_month
+            if t.type == 'expense'
+        )
+        monthly_expenses = monthly_expense_amount + monthly_expense_charges
 
         # Operating (P&L) view: only transactions that affect profit
         operating_income = sum(
@@ -899,6 +1092,8 @@ class PersonalFinanceDashboardView(APIView):
             'operating_income': operating_income,
             'operating_expenses': operating_expenses,
             'operating_net': operating_income - operating_expenses,
+            'monthly_expenses_excluding_charges': monthly_expense_amount,
+            'monthly_transaction_charges': monthly_expense_charges,
             'active_budgets': active_budgets,
             'active_savings_goals': savings_goals,
             'due_recurring_transactions': due_recurring,

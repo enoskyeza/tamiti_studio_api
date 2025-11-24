@@ -2,6 +2,7 @@ from rest_framework import viewsets, permissions, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.utils import timezone
+from core.api import AppContextLoggingPermission
 from field.models import Zone, Lead, Visit, LeadAction
 from field.serializers import (
     ZoneSerializer,
@@ -14,18 +15,22 @@ from field.serializers import (
 )
 
 
-class ZoneViewSet(viewsets.ModelViewSet):
+class StudioScopedMixin:
+    context = "studio"
+
+
+class ZoneViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     queryset = Zone.objects.all()
     serializer_class = ZoneSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [filters.SearchFilter]
     search_fields = ['name', 'region']
 
 
-class LeadViewSet(viewsets.ModelViewSet):
+class LeadViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     queryset = Lead.objects.select_related('assigned_rep', 'zone').prefetch_related('actions').all()
     serializer_class = LeadSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['business_name', 'contact_name', 'contact_phone']
     ordering_fields = ['lead_score', 'priority', 'follow_up_date']
@@ -42,10 +47,10 @@ class LeadViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class VisitViewSet(viewsets.ModelViewSet):
+class VisitViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     queryset = Visit.objects.select_related('rep', 'zone', 'linked_lead').all()
     serializer_class = VisitSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['business_name', 'contact_name', 'contact_phone', 'location']
     ordering_fields = ['date_time']
@@ -62,10 +67,10 @@ class VisitViewSet(viewsets.ModelViewSet):
         return Response({"lead_id": lead.id if lead else None, "linked": bool(lead)})
 
 
-class LeadActionViewSet(viewsets.ModelViewSet):
+class LeadActionViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     queryset = LeadAction.objects.select_related('lead', 'created_by')
     serializer_class = LeadActionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
 
     def get_serializer_class(self):
         if self.action in ['list', 'retrieve']:

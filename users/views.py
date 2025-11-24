@@ -4,12 +4,14 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework import serializers as drf_serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
 import logging
+from core.app_contexts import VALID_APPS
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from config.settings import base
@@ -131,7 +133,12 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             # Create response with new refresh token
             new_refresh = RefreshToken.for_user(user)
             print(f"DEBUG: New refresh token created")
-            
+
+            app = refresh.payload.get('app')
+            if app and app in VALID_APPS:
+                new_refresh['app'] = app
+                new_refresh.access_token['app'] = app
+
             new_refresh_token = str(new_refresh)
             print(f"DEBUG: New refresh token string: {len(new_refresh_token)} chars")
             
@@ -202,9 +209,13 @@ class CookieTokenRefreshView(generics.GenericAPIView):
 class CurrentUserView(generics.GenericAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = UserSerializer
+    parser_classes = (JSONParser, MultiPartParser, FormParser)
+
+    def get_object(self):
+        return self.request.user
 
     def get(self, request):
-        logger.info(f"🔵 [USER ME] Request started", extra={
+        logger.info(f" [USER ME] Request started", extra={
             'timestamp': timezone.now().isoformat(),
             'user_id': request.user.id if request.user.is_authenticated else None,
             'username': request.user.username if request.user.is_authenticated else None,
@@ -214,32 +225,36 @@ class CurrentUserView(generics.GenericAPIView):
         })
         
         if not request.user.is_authenticated:
-            logger.warning(f"🔴 [USER ME] User not authenticated", extra={
+            logger.warning(f" [USER ME] User not authenticated", extra={
                 'timestamp': timezone.now().isoformat(),
                 'auth_header_present': 'HTTP_AUTHORIZATION' in request.META,
             })
             return Response({'error': 'Authentication required'}, status=401)
         
-        user_data = {
-            'id': request.user.id,
-            'username': request.user.username,
-            'email': request.user.email,
-            'first_name': request.user.first_name,
-            'last_name': request.user.last_name,
-            'phone': getattr(request.user, 'phone', ''),
-            'role': getattr(request.user, 'role', None),
-            'is_staff': request.user.is_staff,
-            'is_superuser': request.user.is_superuser,
-        }
+        serializer = self.get_serializer(self.get_object())
         
-        logger.info(f"🟢 [USER ME] Response prepared", extra={
+        logger.info(f" [USER ME] Response prepared", extra={
             'timestamp': timezone.now().isoformat(),
             'user_id': request.user.id,
             'username': request.user.username,
-            'response_keys': list(user_data.keys()),
+            'response_keys': list(serializer.data.keys()),
         })
         
-        return Response(user_data)
+        return Response(serializer.data)
+
+    def patch(self, request):
+        user = self.get_object()
+        serializer = self.get_serializer(user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def put(self, request):
+        user = self.get_object()
+        serializer = self.get_serializer(user, data=request.data)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
 
 
 class RegisterView(generics.CreateAPIView):
@@ -269,6 +284,7 @@ class LoginView(generics.GenericAPIView):
         
         username = request.data.get('username')
         password = request.data.get('password')
+        app = request.data.get('app')
 
         if not username or not password:
             logger.warning(f"🔴 [AUTH LOGIN] Missing credentials", extra={
@@ -289,6 +305,9 @@ class LoginView(generics.GenericAPIView):
             
             # Generate tokens
             refresh = RefreshToken.for_user(user)
+            if app in VALID_APPS:
+                refresh['app'] = app
+                refresh.access_token['app'] = app
             access_token = str(refresh.access_token)
             refresh_token = str(refresh)
             

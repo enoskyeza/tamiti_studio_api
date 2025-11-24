@@ -83,14 +83,9 @@ class CashRoundService:
                 is_active=True
             )
         
-        # Create schedule for the round
-        CashRoundSchedule.objects.create(
-            cash_round=cash_round,
-            sacco=sacco,
-            rotation_order=member_ids,
-            current_position=0,
-            is_active=False  # Will be activated when round starts
-        )
+        # NOTE: Schedule is NOT automatically created
+        # Users must explicitly create and set rotation order via the "Create Schedule" modal
+        # This ensures conscious decision about payout order
         
         return cash_round
     

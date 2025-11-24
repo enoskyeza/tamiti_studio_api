@@ -33,6 +33,14 @@ class Account(BaseModel):
     number = models.CharField(max_length=20, blank=True)
     type = models.CharField(max_length=50, choices=AccountType.choices)
     scope = models.CharField(max_length=20, choices=FinanceScope.choices, default=FinanceScope.COMPANY)
+    domain = models.CharField(
+        max_length=20,
+        choices=(
+            ("studio", "Studio"),
+            ("sacco", "Sacco"),
+        ),
+        default="studio",
+    )
     owner = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True,
                              help_text="Required for personal accounts")
     balance = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -180,6 +188,14 @@ class Requisition(BaseModel):
         self.status = 'approved'
         self.date_approved = timezone.now().date()
         self.save()
+
+    def reject(self, user: User):
+        """Mark this requisition as rejected."""
+        # For now we only track final status; approval fields are only meaningful for approved requisitions
+        self.status = 'rejected'
+        self.approved_by = None
+        self.date_approved = None
+        self.save(update_fields=['status', 'approved_by', 'date_approved'])
     
     def update_total(self):
         """Update calculated_total from items"""
@@ -211,6 +227,13 @@ class Requisition(BaseModel):
         """Check if user can approve this requisition"""
         from permissions.services import PermissionService
         from django.contrib.contenttypes.models import ContentType
+        # Allow authenticated admin/staff users to approve, even if they created it
+        if not user or not getattr(user, 'is_authenticated', False):
+            return False
+
+        if getattr(user, 'is_staff', False):
+            return True
+
         permission_service = PermissionService()
         return permission_service.has_permission(
             user=user,
@@ -301,6 +324,13 @@ class Payment(BaseModel):
 class Transaction(BaseModel):
     type = models.CharField(max_length=20, choices=TransactionType.choices)  # income, expense
     amount = models.DecimalField(max_digits=12, decimal_places=2)
+    transaction_charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text="Fees/charges associated with this transaction",
+    )
     description = models.TextField(blank=True)
     account = models.ForeignKey(Account, on_delete=models.SET_NULL, null=True)
     category = models.CharField(max_length=50, choices=PaymentCategory.choices)
@@ -319,7 +349,16 @@ class Transaction(BaseModel):
         creating = self._state.adding
         super().save(*args, **kwargs)
         if creating and self.account:
-            self.account.apply_transaction(self.type, self.amount)
+            # For company transactions, apply net cash effect including charges
+            total_amount = self.amount
+            if self.type == TransactionType.INCOME:
+                # Net cash in = amount - charge
+                total_amount = self.amount - (self.transaction_charge or 0)
+            else:
+                # Net cash out = amount + charge
+                total_amount = self.amount + (self.transaction_charge or 0)
+
+            self.account.apply_transaction(self.type, total_amount)
 
 
 class Quotation(BaseModel):
@@ -508,7 +547,14 @@ class PersonalTransaction(BaseModel):
         super().save(*args, **kwargs)
 
         if is_new and self.account:
-            self.account.apply_transaction(self.type, self.amount)
+            total_amount = self.amount + (self.transaction_charge or 0)
+
+            if self.type == TransactionType.INCOME:
+                self.account.balance += self.amount - (self.transaction_charge or 0)
+            elif self.type == TransactionType.EXPENSE:
+                self.account.balance -= total_amount
+
+            self.account.save(update_fields=['balance'])
 
     @property
     def total_cost(self):
@@ -653,11 +699,14 @@ class PersonalSavingsGoal(BaseModel):
         self.save()
 
         if create_transaction:
+            account = self.user.account_set.filter(scope=FinanceScope.PERSONAL).first()
+            if not account:
+                raise ValidationError({'account': 'Create at least one personal account before adding contributions.'})
             PersonalTransaction.objects.create(
                 user=self.user,
                 type=TransactionType.EXPENSE,
                 amount=amount,
-                account=self.user.account_set.filter(scope=FinanceScope.PERSONAL).first(),
+                account=account,
                 expense_category=PersonalExpenseCategory.SAVINGS,
                 description=f"Savings for: {self.name}",
                 reason=description,
