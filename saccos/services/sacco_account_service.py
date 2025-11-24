@@ -43,6 +43,7 @@ class SaccoAccountService:
             number=account_details.get('account_number', ''),
             type=account_details.get('account_type', AccountType.BANK),
             scope=FinanceScope.COMPANY,
+            domain="sacco",
             balance=Decimal('0'),
             is_active=True,
             description=f"Main financial account for {sacco.name}"

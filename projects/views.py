@@ -5,6 +5,7 @@ from rest_framework import generics, permissions
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 
+from core.api import AppContextLoggingPermission
 from projects.filters import ProjectFilter
 from projects.models import Project, Milestone
 from comments.models import Comment
@@ -18,8 +19,12 @@ from tasks.serializers import TaskSerializer
 from tasks.filters import TaskFilter
 
 
-class ProjectListCreateView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class StudioScopedMixin:
+    context = "studio"
+
+
+class ProjectListCreateView(StudioScopedMixin, generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = ProjectFilter
     # Allow client ordering while keeping a stable default
@@ -32,7 +37,14 @@ class ProjectListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         if getattr(self, "swagger_fake_view", False):
             return Project.objects.none()
-        qs = Project.objects.filter(created_by=self.request.user)
+        user = self.request.user
+        base_q = (
+            Q(created_by=user) |
+            Q(members__user=user) |
+            Q(tasks__assigned_to=user) |
+            Q(tasks__assigned_users=user)
+        )
+        qs = Project.objects.filter(base_q).distinct()
         if status := self.request.query_params.get('status'):
             qs = qs.filter(status=status)
         if priority := self.request.query_params.get('priority'):
@@ -46,41 +58,69 @@ class ProjectListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user)
 
 
-class ProjectDetailView(generics.RetrieveUpdateDestroyAPIView):
+class ProjectDetailView(StudioScopedMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ProjectSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Project.objects.filter(created_by=self.request.user)
+        user = self.request.user
+        base_q = (
+            Q(created_by=user) |
+            Q(members__user=user) |
+            Q(tasks__assigned_to=user) |
+            Q(tasks__assigned_users=user)
+        )
+        return Project.objects.filter(base_q).distinct()
 
 
-class MilestoneListCreateView(generics.ListCreateAPIView):
+class MilestoneListCreateView(StudioScopedMixin, generics.ListCreateAPIView):
     serializer_class = MilestoneSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     ordering_fields = ['id', 'name', 'due_date', 'completed', 'created_at', 'updated_at']
     ordering = ['due_date', 'id']
 
     def get_queryset(self):
-        qs = Milestone.objects.filter(project__created_by=self.request.user)
+        user = self.request.user
+        project_q = (
+            Q(project__created_by=user) |
+            Q(project__members__user=user) |
+            Q(project__tasks__assigned_to=user) |
+            Q(project__tasks__assigned_users=user)
+        )
+        qs = Milestone.objects.filter(project_q).distinct()
         return qs.order_by('due_date', 'id')
 
 
-class MilestoneDetailView(generics.RetrieveUpdateDestroyAPIView):
+class MilestoneDetailView(StudioScopedMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = MilestoneSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        return Milestone.objects.filter(project__created_by=self.request.user)
+        user = self.request.user
+        project_q = (
+            Q(project__created_by=user) |
+            Q(project__members__user=user) |
+            Q(project__tasks__assigned_to=user) |
+            Q(project__tasks__assigned_users=user)
+        )
+        return Milestone.objects.filter(project_q).distinct()
 
 
-class ProjectCommentListCreateView(generics.ListCreateAPIView):
+class ProjectCommentListCreateView(StudioScopedMixin, generics.ListCreateAPIView):
     serializer_class = CommentSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
 
     def get_queryset(self):
+        user = self.request.user
+        project_base_q = (
+            Q(created_by=user) |
+            Q(members__user=user) |
+            Q(tasks__assigned_to=user) |
+            Q(tasks__assigned_users=user)
+        )
         project = Project.objects.filter(
-            id=self.kwargs['project_id'], created_by=self.request.user
+            Q(id=self.kwargs['project_id']) & project_base_q
         ).first()
         if not project:
             return Comment.objects.none()
@@ -93,7 +133,16 @@ class ProjectCommentListCreateView(generics.ListCreateAPIView):
         ).select_related('author')
 
     def perform_create(self, serializer):
-        project = Project.objects.get(id=self.kwargs['project_id'], created_by=self.request.user)
+        user = self.request.user
+        project_base_q = (
+            Q(created_by=user) |
+            Q(members__user=user) |
+            Q(tasks__assigned_to=user) |
+            Q(tasks__assigned_users=user)
+        )
+        project = Project.objects.get(
+            Q(id=self.kwargs['project_id']) & project_base_q
+        )
         serializer.save(
             author=self.request.user,
             content_type=ContentType.objects.get(app_label='projects', model='project'),
@@ -101,9 +150,9 @@ class ProjectCommentListCreateView(generics.ListCreateAPIView):
         )
 
 
-class ProjectTaskListView(generics.ListAPIView):
+class ProjectTaskListView(StudioScopedMixin, generics.ListAPIView):
     """List tasks for a given project with same filters as /tasks"""
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     serializer_class = TaskSerializer
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = TaskFilter
@@ -114,5 +163,12 @@ class ProjectTaskListView(generics.ListAPIView):
     ordering = ['is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id']
 
     def get_queryset(self):
-        qs = Task.objects.filter(project_id=self.kwargs['project_id'], project__created_by=self.request.user)
+        user = self.request.user
+        qs = Task.objects.filter(project_id=self.kwargs['project_id']).filter(
+            Q(created_by=user) |
+            Q(assigned_to=user) |
+            Q(assigned_users=user) |
+            Q(project__created_by=user) |
+            Q(project__members__user=user)
+        ).distinct()
         return qs.order_by('is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id')

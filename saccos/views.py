@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
+from core.api import AppContextLoggingPermission
 from .models import (
     SaccoOrganization, SaccoMember, MemberPassbook,
     PassbookSection, PassbookEntry, DeductionRule,
@@ -26,7 +27,12 @@ from .services.passbook_service import PassbookService
 from .services.cash_round_service import CashRoundService
 
 
-class SaccoOrganizationViewSet(viewsets.ModelViewSet):
+class SaccoScopedMixin:
+    context = "sacco"
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
+
+
+class SaccoOrganizationViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for SACCO Organization management
     Phase 1: Foundation
@@ -102,7 +108,7 @@ class SaccoOrganizationViewSet(viewsets.ModelViewSet):
         }, status=status.HTTP_201_CREATED)
 
 
-class SaccoMemberViewSet(viewsets.ModelViewSet):
+class SaccoMemberViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for SACCO Member management
     Phase 1: Foundation
@@ -314,7 +320,7 @@ class SaccoMemberViewSet(viewsets.ModelViewSet):
             )
 
 
-class MemberPassbookViewSet(viewsets.ReadOnlyModelViewSet):
+class MemberPassbookViewSet(SaccoScopedMixin, viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for Member Passbook (read-only, entries are created via PassbookEntryViewSet)
     Phase 2: Passbook System
@@ -360,7 +366,7 @@ class MemberPassbookViewSet(viewsets.ReadOnlyModelViewSet):
         return Response(statement)
 
 
-class PassbookSectionViewSet(viewsets.ModelViewSet):
+class PassbookSectionViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Passbook Section management
     Phase 2: Passbook System
@@ -385,7 +391,7 @@ class PassbookSectionViewSet(viewsets.ModelViewSet):
         return PassbookSection.objects.none()
 
 
-class PassbookEntryViewSet(viewsets.ModelViewSet):
+class PassbookEntryViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Passbook Entry management
     Phase 2: Passbook System
@@ -463,7 +469,7 @@ class PassbookEntryViewSet(viewsets.ModelViewSet):
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-class DeductionRuleViewSet(viewsets.ModelViewSet):
+class DeductionRuleViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Deduction Rule management
     Phase 2: Passbook System (Updated for CashRound)
@@ -515,7 +521,7 @@ class DeductionRuleViewSet(viewsets.ModelViewSet):
 # ============================================================================
 
 
-class CashRoundViewSet(viewsets.ModelViewSet):
+class CashRoundViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Cash Round management
     Supports multiple concurrent cash rounds per SACCO
@@ -761,7 +767,7 @@ class CashRoundViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class CashRoundScheduleViewSet(viewsets.ModelViewSet):
+class CashRoundScheduleViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Cash Round Schedule management
     Phase 3: Weekly Meetings
@@ -801,7 +807,7 @@ class CashRoundScheduleViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class WeeklyMeetingViewSet(viewsets.ModelViewSet):
+class WeeklyMeetingViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Weekly Meeting management
     Phase 3: Weekly Meetings
@@ -939,7 +945,7 @@ class WeeklyMeetingViewSet(viewsets.ModelViewSet):
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
-class WeeklyContributionViewSet(viewsets.ModelViewSet):
+class WeeklyContributionViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Weekly Contribution management
     Phase 3: Weekly Meetings
@@ -1006,7 +1012,7 @@ class WeeklyContributionViewSet(viewsets.ModelViewSet):
 # ============================================================================
 
 
-class SaccoLoanViewSet(viewsets.ModelViewSet):
+class SaccoLoanViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for SACCO Loan management
     Phase 4: Loan Management

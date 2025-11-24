@@ -8,6 +8,7 @@ from rest_framework import generics, permissions, status, viewsets
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
+from core.api import AppContextLoggingPermission
 
 from accounts.models import Department
 from users.models import User
@@ -21,8 +22,12 @@ from tasks.serializers import (
 )
 
 
-class TaskListCreateView(generics.ListCreateAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class StudioScopedMixin:
+    context = "studio"
+
+
+class TaskListCreateView(StudioScopedMixin, generics.ListCreateAPIView):
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_class = TaskFilter
     # Allow client ordering with a stable default
@@ -45,19 +50,22 @@ class TaskListCreateView(generics.ListCreateAPIView):
         try:
             dept: Department | None = getattr(user, 'staff_profile', None) and user.staff_profile.department
             if dept:
-                team_q = Q(assigned_team=dept)
+                team_q = Q(assigned_team=dept) | Q(assigned_teams=dept)
         except Exception:
             team_q = Q()
         qs = Task.objects.select_related('project', 'assigned_to', 'assigned_team').prefetch_related('tags').filter(
             Q(created_by=user) |
             Q(project__created_by=user) |
             Q(assigned_to=user) |
+            Q(assigned_users=user) |
             team_q
         ).distinct()
         # optional shortcut: personal tasks only
         personal = self.request.query_params.get('personal')
         if personal in {'1', 'true', 'True'}:
-            qs = qs.filter(project__isnull=True).filter(Q(assigned_to=user) | Q(created_by=user))
+            qs = qs.filter(project__isnull=True).filter(
+                Q(created_by=user) | Q(assigned_to=user) | Q(assigned_users=user)
+            )
         # Explicit deterministic ordering for stable pagination
         return qs.order_by('is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id')
 
@@ -65,8 +73,8 @@ class TaskListCreateView(generics.ListCreateAPIView):
         serializer.save(created_by=self.request.user)
 
 
-class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
-    permission_classes = [permissions.IsAuthenticated]
+class TaskDetailView(StudioScopedMixin, generics.RetrieveUpdateDestroyAPIView):
+    permission_classes = [permissions.IsAuthenticated, AppContextLoggingPermission]
 
     def get_serializer_class(self):
         if self.request.method in ['PUT', 'PATCH']:
@@ -80,11 +88,15 @@ class TaskDetailView(generics.RetrieveUpdateDestroyAPIView):
         try:
             dept = getattr(user, 'staff_profile', None) and user.staff_profile.department
             if dept:
-                team_q = Q(assigned_team=dept)
+                team_q = Q(assigned_team=dept) | Q(assigned_teams=dept)
         except Exception:
             team_q = Q()
         return Task.objects.select_related('project', 'assigned_to', 'assigned_team').prefetch_related('checklist_items').filter(
-            Q(created_by=user) | Q(assigned_to=user) | Q(project__created_by=user) | team_q
+            Q(created_by=user) |
+            Q(assigned_to=user) |
+            Q(assigned_users=user) |
+            Q(project__created_by=user) |
+            team_q
         ).distinct()
 
 
@@ -99,7 +111,10 @@ def toggle_task_completion(request, task_id):
     try:
         task = Task.objects.get(
             Q(id=task_id),
-            Q(created_by=request.user) | Q(assigned_to=request.user) | Q(project__created_by=request.user)
+            Q(created_by=request.user) |
+            Q(assigned_to=request.user) |
+            Q(assigned_users=request.user) |
+            Q(project__created_by=request.user)
         )
         task.is_completed = not task.is_completed
         task.save()
@@ -145,7 +160,11 @@ def snooze_task(request, task_id):
             return Response({'error': 'invalid datetime format'}, status=status.HTTP_400_BAD_REQUEST)
         task = Task.objects.get(
             Q(id=task_id),
-            Q(created_by=request.user) | Q(assigned_to=request.user) | Q(project__created_by=request.user)
+            Q(created_by=request.user) |
+            Q(assigned_to=request.user) |
+            Q(assigned_users=request.user) |
+            Q(assigned_teams=request.user.staff_profile.department) |
+            Q(project__created_by=request.user)
         )
         task.snoozed_until = dt
         task.save(update_fields=['snoozed_until', 'updated_at'])
@@ -154,7 +173,7 @@ def snooze_task(request, task_id):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
-class TeamTaskListView(generics.ListAPIView):
+class TeamTaskListView(StudioScopedMixin, generics.ListAPIView):
     """List tasks for a given team/department ID with full filtering support."""
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, OrderingFilter]
@@ -172,7 +191,7 @@ class TeamTaskListView(generics.ListAPIView):
         return qs.order_by('is_completed', 'kanban_position', 'position', 'due_date', '-updated_at', '-id')
 
 
-class BacklogItemViewSet(viewsets.ModelViewSet):
+class BacklogItemViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing backlog items"""
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = BacklogItemSerializer
@@ -213,7 +232,7 @@ class BacklogItemViewSet(viewsets.ModelViewSet):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class TaskChecklistViewSet(viewsets.ModelViewSet):
+class TaskChecklistViewSet(StudioScopedMixin, viewsets.ModelViewSet):
     """ViewSet for managing task checklist items"""
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = TaskChecklistSerializer

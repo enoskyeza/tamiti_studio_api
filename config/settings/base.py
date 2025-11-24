@@ -190,6 +190,9 @@ SIMPLE_JWT = {
     'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
+# App context enforcement (per-app backend isolation)
+APP_CONTEXT_ENFORCEMENT: bool = config("APP_CONTEXT_ENFORCEMENT", default=False, cast=bool)
+
 # Security
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True

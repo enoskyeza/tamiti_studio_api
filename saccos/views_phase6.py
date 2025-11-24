@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.shortcuts import get_object_or_404
 
+from core.api import AppContextLoggingPermission
 from .models import (
     SaccoOrganization, SubscriptionPlan, SaccoSubscription,
     SubscriptionInvoice, UsageMetrics
@@ -13,6 +14,11 @@ from .serializers import (
     SubscriptionInvoiceSerializer, UsageMetricsSerializer
 )
 from .services.subscription_service import SubscriptionService
+
+
+class SaccoScopedMixin:
+    context = "sacco"
+    permission_classes = [IsAuthenticated, AppContextLoggingPermission]
 
 
 # ============================================================================
@@ -45,7 +51,7 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
         return SubscriptionPlan.objects.filter(is_active=True, is_public=True)
 
 
-class SaccoSubscriptionViewSet(viewsets.ModelViewSet):
+class SaccoSubscriptionViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for SACCO Subscription management
     Phase 6: SaaS Features
@@ -204,7 +210,7 @@ class SaccoSubscriptionViewSet(viewsets.ModelViewSet):
         return Response(limits)
 
 
-class SubscriptionInvoiceViewSet(viewsets.ModelViewSet):
+class SubscriptionInvoiceViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     """
     ViewSet for Subscription Invoice management
     Phase 6: SaaS Features
@@ -250,7 +256,7 @@ class SubscriptionInvoiceViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
 
-class UsageMetricsViewSet(viewsets.ReadOnlyModelViewSet):
+class UsageMetricsViewSet(SaccoScopedMixin, viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for Usage Metrics (read-only)
     Phase 6: SaaS Features

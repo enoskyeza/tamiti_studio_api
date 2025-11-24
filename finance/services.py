@@ -135,16 +135,7 @@ class PersonalFinanceService:
     @staticmethod
     def update_account_balance(account, transaction):
         """Update account balance based on transaction type"""
-        from common.enums import TransactionType
-
-        total_amount = transaction.amount + transaction.transaction_charge
-
-        if transaction.type == TransactionType.INCOME:
-            account.balance += transaction.amount - transaction.transaction_charge
-        elif transaction.type == TransactionType.EXPENSE:
-            account.balance -= total_amount
-
-        account.save(update_fields=['balance'])
+        return
 
     @staticmethod
     def update_budget_spending(user, transaction):

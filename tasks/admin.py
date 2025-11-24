@@ -63,6 +63,7 @@ class TaskAdmin(admin.ModelAdmin):
         'status', 'priority', 'is_completed',
         ('project', admin.RelatedOnlyFieldListFilter),
         ('assigned_to', admin.RelatedOnlyFieldListFilter),
+        ('assigned_users', admin.RelatedOnlyFieldListFilter),
         ('assigned_team', admin.RelatedOnlyFieldListFilter),
         'due_date', OverdueFilter, SnoozedFilter,
     )
@@ -71,6 +72,7 @@ class TaskAdmin(admin.ModelAdmin):
     ]
     readonly_fields = ['uuid', 'completed_at', 'is_overdue', 'created_at', 'updated_at']
     autocomplete_fields = ['assigned_to', 'assigned_team', 'project', 'milestone', 'dependencies', 'parent']
+    filter_horizontal = ('assigned_users',)
     ordering = ['is_completed', 'position', 'due_date']
     list_select_related = ('project', 'assigned_to', 'assigned_team')
     list_per_page = 50
@@ -80,7 +82,7 @@ class TaskAdmin(admin.ModelAdmin):
             'fields': ('project', 'title', 'description', 'status', 'priority', 'is_completed', 'origin_app')
         }),
         ('Assignment', {
-            'fields': ('assigned_to', 'assigned_team', 'milestone', 'parent')
+            'fields': ('assigned_to', 'assigned_users', 'assigned_team', 'milestone', 'parent')
         }),
         ('Timing', {
             'fields': (

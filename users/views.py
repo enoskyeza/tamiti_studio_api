@@ -11,6 +11,7 @@ from rest_framework import serializers as drf_serializers
 from django.contrib.auth import authenticate
 from django.utils import timezone
 import logging
+from core.app_contexts import VALID_APPS
 from drf_spectacular.utils import extend_schema, OpenApiParameter, OpenApiResponse
 
 from config.settings import base
@@ -132,7 +133,12 @@ class CookieTokenRefreshView(generics.GenericAPIView):
             # Create response with new refresh token
             new_refresh = RefreshToken.for_user(user)
             print(f"DEBUG: New refresh token created")
-            
+
+            app = refresh.payload.get('app')
+            if app and app in VALID_APPS:
+                new_refresh['app'] = app
+                new_refresh.access_token['app'] = app
+
             new_refresh_token = str(new_refresh)
             print(f"DEBUG: New refresh token string: {len(new_refresh_token)} chars")
             
@@ -278,6 +284,7 @@ class LoginView(generics.GenericAPIView):
         
         username = request.data.get('username')
         password = request.data.get('password')
+        app = request.data.get('app')
 
         if not username or not password:
             logger.warning(f"🔴 [AUTH LOGIN] Missing credentials", extra={
@@ -298,6 +305,9 @@ class LoginView(generics.GenericAPIView):
             
             # Generate tokens
             refresh = RefreshToken.for_user(user)
+            if app in VALID_APPS:
+                refresh['app'] = app
+                refresh.access_token['app'] = app
             access_token = str(refresh.access_token)
             refresh_token = str(refresh)
             

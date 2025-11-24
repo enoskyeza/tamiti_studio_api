@@ -366,9 +366,15 @@ class RequisitionDetailSerializer(serializers.ModelSerializer):
 
 
 class TransactionSerializer(serializers.ModelSerializer):
+    goal_id = serializers.SerializerMethodField()
+
     class Meta:
         model = Transaction
         fields = '__all__'
+
+    def get_goal_id(self, obj):
+        payment = getattr(obj, 'related_payment', None) or getattr(obj, 'linked_payment', None)
+        return payment.goal_id if payment else None
 
 
 class PaymentSerializer(serializers.ModelSerializer):

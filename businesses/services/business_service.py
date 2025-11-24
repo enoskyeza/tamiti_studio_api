@@ -79,7 +79,8 @@ class BusinessService:
             name=f"{enterprise.name} - Cash Box",
             type='asset',
             scope='company',
-            description=f"Daily cash operations for {enterprise.name} business"
+            domain='sacco',
+            description=f"Daily cash operations for {enterprise.name} business",
         )
         
         # 2. Inventory Asset
@@ -87,7 +88,8 @@ class BusinessService:
             name=f"{enterprise.name} - Inventory",
             type='asset',
             scope='company',
-            description=f"Stock on hand for {enterprise.name}"
+            domain='sacco',
+            description=f"Stock on hand for {enterprise.name}",
         )
         
         # 3. Sales Revenue
@@ -95,7 +97,8 @@ class BusinessService:
             name=f"{enterprise.name} - Sales Revenue",
             type='revenue',
             scope='company',
-            description=f"Income from sales for {enterprise.name}"
+            domain='sacco',
+            description=f"Income from sales for {enterprise.name}",
         )
         
         # 4. Cost of Goods Sold
@@ -103,7 +106,8 @@ class BusinessService:
             name=f"{enterprise.name} - Cost of Goods Sold",
             type='expense',
             scope='company',
-            description=f"Cost of items sold for {enterprise.name}"
+            domain='sacco',
+            description=f"Cost of items sold for {enterprise.name}",
         )
         
         # 5. Operating Expenses
@@ -111,7 +115,8 @@ class BusinessService:
             name=f"{enterprise.name} - Operating Expenses",
             type='expense',
             scope='company',
-            description=f"General business expenses for {enterprise.name}"
+            domain='sacco',
+            description=f"General business expenses for {enterprise.name}",
         )
         
         # Set main account (Cash Box) on enterprise

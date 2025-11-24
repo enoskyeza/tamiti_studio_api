@@ -10,6 +10,9 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 from .models import Comment
 from .serializers import CommentSerializer, CommentReplySerializer, MentionSearchSerializer, UserMentionSerializer
 from users.models import User
+from tasks.models import Task
+from projects.models import Project
+from accounts.models import Department
 
 
 ALLOWED_TARGETS = {
@@ -29,7 +32,38 @@ def _get_target(content_type_str: str, object_id: int, user):
     ct = get_object_or_404(ContentType, app_label=app_label, model=model)
     model_cls = ct.model_class()
 
-    # Enforce access by created_by where available
+    # Use domain-specific visibility rules for tasks and projects so
+    # comment access matches the main APIs.
+    if app_label == 'tasks' and model == 'task':
+        team_q = Q()
+        try:
+            dept: Department | None = getattr(user, 'staff_profile', None) and user.staff_profile.department
+            if dept:
+                team_q = Q(assigned_team=dept) | Q(assigned_teams=dept)
+        except Exception:
+            team_q = Q()
+
+        task_access_q = (
+            Q(created_by=user)
+            | Q(project__created_by=user)
+            | Q(assigned_to=user)
+            | Q(assigned_users=user)
+            | team_q
+        )
+        target = get_object_or_404(Task.objects.filter(task_access_q).distinct(), pk=object_id)
+        return ct, target
+
+    if app_label == 'projects' and model == 'project':
+        project_access_q = (
+            Q(created_by=user)
+            | Q(members__user=user)
+            | Q(tasks__assigned_to=user)
+            | Q(tasks__assigned_users=user)
+        )
+        target = get_object_or_404(Project.objects.filter(project_access_q).distinct(), pk=object_id)
+        return ct, target
+
+    # Generic fallback: enforce access by created_by where available
     try:
         target = get_object_or_404(model_cls.objects.filter(created_by=user), pk=object_id)
     except Exception:
