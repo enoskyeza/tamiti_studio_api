@@ -150,6 +150,21 @@ class InvoiceViewSet(BaseModelViewSet):
         s = PaymentCreateSerializer(data=request.data, context={'invoice': invoice, 'request': request})
         s.is_valid(raise_exception=True)
         payment = s.save()
+
+        if not getattr(payment, 'receipt', None):
+            Receipt.objects.create(
+                number='',
+                date=timezone.localdate(),
+                party=invoice.party,
+                invoice=invoice,
+                amount=payment.amount,
+                account=payment.account,
+                method=payment.method or PaymentMethod.CASH,
+                reference='',
+                notes=payment.notes or f"Receipt for payment of invoice {invoice.number or f'#{invoice.id}'}",
+                payment=payment,
+            )
+
         return Response({'id': payment.pk, 'invoice': invoice.pk, 'amount': str(payment.amount)}, status=201)
 
 
@@ -494,6 +509,17 @@ class ReceiptViewSet(BaseModelViewSet):
         receipt = serializer.save()
         # If linked to an invoice, record payment via FinanceService (ensures Transaction is created)
         if receipt.invoice and not receipt.payment:
+            existing_payment = Payment.objects.filter(
+                invoice=receipt.invoice,
+                amount=receipt.amount,
+                account=receipt.account,
+                receipt__isnull=True,
+            ).order_by('id').first()
+            if existing_payment:
+                receipt.payment = existing_payment
+                receipt.save(update_fields=['payment'])
+                return
+
             payment = FinanceService.record_invoice_payment(
                 invoice=receipt.invoice,
                 amount=receipt.amount,
