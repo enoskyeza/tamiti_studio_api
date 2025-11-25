@@ -4,7 +4,7 @@ from rest_framework.views import APIView
 from rest_framework.decorators import action
 from django_filters.rest_framework import DjangoFilterBackend
 from django_filters import rest_framework as df_filters
-from django.db import models as dj_models
+from django.db import models as dj_models, transaction as db_transaction
 from django.utils import timezone
 from django.db.models import Sum, Count, F, DecimalField, Value, OuterRef, Subquery, Prefetch
 from django.db.models.functions import Coalesce
@@ -530,6 +530,44 @@ class ReceiptViewSet(BaseModelViewSet):
             )
             receipt.payment = payment
             receipt.save(update_fields=['payment'])
+
+    def perform_destroy(self, instance):
+        """Delete a receipt and clean up its linked payment and transaction.
+
+        This ensures that removing a receipt also removes the Payment and
+        Transaction that were created for it, and that the related Account
+        balance and Invoice aggregates reflect the removal.
+        """
+        payment = instance.payment
+        invoice = instance.invoice or (payment.invoice if payment else None)
+
+        # Prefer the Payment.transaction link, but fall back to the reverse
+        # relationship in case only one side is populated.
+        tx = None
+        account = None
+        if payment:
+            tx = getattr(payment, 'transaction', None) or getattr(payment, 'linked_transaction', None)
+            if tx and tx.account_id:
+                account = tx.account
+
+        with db_transaction.atomic():
+            # Delete the receipt record itself
+            instance.delete()
+
+            # Delete the associated transaction and refresh account balance
+            if tx:
+                tx.delete()
+                if account:
+                    account.update_balance()
+
+            # Delete the associated payment; invoice aggregates (paid_amount,
+            # amount_due) are based on current Payment rows, so they will
+            # automatically reflect this removal.
+            if payment:
+                payment.delete()
+
+            if invoice:
+                invoice.refresh_from_db()
 
 
 class InvoiceItemViewSet(BaseModelViewSet):
