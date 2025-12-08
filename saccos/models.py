@@ -891,8 +891,11 @@ class WeeklyMeeting(BaseModel):
         self.members_present = self.contributions.filter(was_present=True).count()
         self.members_absent = self.contributions.filter(was_present=False).count()
         
-        # Total collected from present members
-        present_contributions = self.contributions.filter(was_present=True)
+        # Total collected from present members PLUS SACCO-covered defaulters
+        # (funding_source='sacco' ensures the recipient still receives full payout)
+        present_contributions = self.contributions.filter(
+            models.Q(was_present=True) | models.Q(funding_source='sacco')
+        )
         self.total_collected = sum(
             (c.amount_contributed or Decimal('0')) for c in present_contributions
         )
@@ -1003,6 +1006,16 @@ class WeeklyContribution(BaseModel):
         decimal_places=2,
         default=0,
         help_text="Optional savings amount"
+    )
+    
+    funding_source = models.CharField(
+        max_length=20,
+        choices=[
+            ('member', 'Paid by Member'),
+            ('sacco', 'Covered by SACCO (Defaulted)')
+        ],
+        default='member',
+        help_text="Who actually provided this contribution"
     )
     
     # Deductions (ONLY for recipient)
@@ -1149,6 +1162,16 @@ class SaccoLoan(BaseModel):
         max_digits=12,
         decimal_places=2,
         default=0
+    )
+    
+    loan_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('regular', 'Regular Loan'),
+            ('emergency', 'Emergency Support'),
+            ('missed_contribution', 'Missed Contribution')
+        ],
+        default='regular'
     )
     
     # Status

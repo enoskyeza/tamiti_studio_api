@@ -98,6 +98,95 @@ class WeeklyMeetingService:
     
     @staticmethod
     @transaction.atomic
+    def record_defaulter(
+        meeting,
+        member,
+        amount=None,
+        notes='',
+        recorded_by=None
+    ):
+        """Record a defaulter for a weekly meeting.
+
+        Creates:
+        - WeeklyContribution funded by SACCO (funding_source='sacco') so the
+          meeting pot remains complete
+        - Zero-interest missed_contribution SaccoLoan as arrears
+        - SACCO account expense transaction for the covered amount
+        """
+        from saccos.models import WeeklyContribution
+        from saccos.services.loan_service import LoanService
+        from saccos.services.sacco_account_service import SaccoAccountService
+        
+        # Determine amount to cover
+        if amount is None:
+            if meeting.cash_round and meeting.cash_round.weekly_amount:
+                amount = meeting.cash_round.weekly_amount
+            else:
+                raise ValueError("Amount is required when cash round weekly amount is not set")
+        amount = Decimal(str(amount))
+        
+        # Check if this member is the recipient for this meeting
+        is_recipient = (member == meeting.cash_round_recipient)
+        
+        # Create or update the contribution for this member/meeting
+        contribution, created = WeeklyContribution.objects.get_or_create(
+            meeting=meeting,
+            member=member,
+            defaults={
+                'was_present': False,
+                'amount_contributed': amount,
+                'optional_savings': Decimal('0'),
+                'is_recipient': is_recipient,
+                'funding_source': 'sacco',
+                'notes': notes or 'Marked as defaulter and covered by SACCO',
+            }
+        )
+        
+        if not created:
+            contribution.was_present = False
+            contribution.amount_contributed = amount
+            contribution.optional_savings = Decimal('0')
+            contribution.is_recipient = is_recipient
+            contribution.funding_source = 'sacco'
+            if notes:
+                contribution.notes = f"{contribution.notes}\n{notes}" if contribution.notes else notes
+            contribution.save()
+        
+        # Create zero-interest arrears loan for the missed contribution
+        loan = LoanService.create_missed_contribution_loan(
+            sacco=meeting.sacco,
+            member=member,
+            amount=amount,
+            meeting=meeting,
+            notes=notes,
+            recorded_by=recorded_by,
+        )
+        
+        # Record SACCO account expense for covering this contribution
+        try:
+            sacco_account = meeting.sacco.get_or_create_account()
+            SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=TransactionType.EXPENSE,
+                amount=amount,
+                category=PaymentCategory.SACCO_LOAN_DISBURSEMENT,
+                description=f"Missed contribution coverage - Week {meeting.week_number} - {member.member_number}",
+                date=meeting.meeting_date,
+                related_meeting=meeting,
+                related_loan=loan,
+                recorded_by=recorded_by,
+            )
+        except Exception as e:
+            # Log error but don't fail the defaulter flow
+            print(f"Error recording SACCO defaulter coverage transaction: {e}")
+        
+        return {
+            'contribution': contribution,
+            'loan': loan
+        }
+    
+    @staticmethod
+    @transaction.atomic
     def process_weekly_deductions(meeting, recorded_by):
         """
         Process deductions for the cash round recipient ONLY

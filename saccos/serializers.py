@@ -390,7 +390,7 @@ class WeeklyContributionSerializer(serializers.ModelSerializer):
         model = WeeklyContribution
         fields = [
             'id', 'uuid', 'meeting', 'member', 'member_number', 'member_name',
-            'was_present', 'amount_contributed', 'optional_savings',
+            'was_present', 'amount_contributed', 'optional_savings', 'funding_source',
             'is_recipient', 'compulsory_savings_deduction', 'welfare_deduction',
             'development_deduction', 'other_deductions', 'total_deductions',
             'notes', 'created_at', 'updated_at'
@@ -524,7 +524,7 @@ class SaccoLoanSerializer(serializers.ModelSerializer):
             'total_amount', 'application_date', 'approval_date', 'disbursement_date',
             'due_date', 'duration_months', 'repayment_frequency', 'amount_paid_principal',
             'amount_paid_interest', 'balance_principal', 'balance_interest',
-            'total_balance', 'status', 'purpose', 'notes', 'approved_by',
+            'total_balance', 'status', 'loan_type', 'purpose', 'notes', 'approved_by',
             'approved_by_name', 'rejection_reason', 'is_overdue',
             'guarantors', 'payments', 'created_at', 'updated_at'
         ]

@@ -912,6 +912,68 @@ class WeeklyMeetingViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
             'entries_created': deduction_result.get('entries_created', 0)
         })
     
+    @action(detail=True, methods=['post'])
+    def record_defaulter(self, request, pk=None):
+        """Mark a member as defaulted for this meeting and create arrears loan.
+
+        Expected payload:
+        {
+          "member_id": <int>,
+          "amount": <decimal, optional>,
+          "notes": <string, optional>
+        }
+        """
+        from saccos.services.weekly_meeting_service import WeeklyMeetingService
+        
+        meeting = self.get_object()
+        member_id = request.data.get('member_id')
+        amount = request.data.get('amount')
+        notes = request.data.get('notes', '')
+        
+        if not member_id:
+            return Response({'error': 'member_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Resolve member within same SACCO and (optionally) same cash round
+        member = get_object_or_404(SaccoMember, id=member_id, sacco=meeting.sacco)
+        
+        # Optional: ensure member is part of the cash round for this meeting
+        if meeting.cash_round:
+            in_round = CashRoundMember.objects.filter(
+                cash_round=meeting.cash_round,
+                member=member,
+                is_active=True
+            ).exists()
+            if not in_round:
+                return Response(
+                    {'error': 'Member is not part of the cash round for this meeting'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        
+        try:
+            result = WeeklyMeetingService.record_defaulter(
+                meeting=meeting,
+                member=member,
+                amount=amount,
+                notes=notes,
+                recorded_by=request.user
+            )
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+        
+        contribution = result['contribution']
+        loan = result['loan']
+        
+        contribution_data = WeeklyContributionSerializer(contribution).data
+        loan_data = SaccoLoanSerializer(loan).data
+        
+        return Response(
+            {
+                'contribution': contribution_data,
+                'loan': loan_data
+            },
+            status=status.HTTP_201_CREATED
+        )
+    
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
         """Get meeting summary"""
@@ -1072,6 +1134,7 @@ class SaccoLoanViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
         repayment_frequency = serializer.validated_data.get('repayment_frequency', 'monthly')
         guarantor_ids = self.request.data.get('guarantor_ids') or None
         application_date = self.request.data.get('application_date') or None
+        notes = serializer.validated_data.get('notes', '')
         
         loan = LoanService.create_loan_application(
             sacco=sacco,
@@ -1083,6 +1146,7 @@ class SaccoLoanViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
             repayment_frequency=repayment_frequency,
             guarantor_ids=guarantor_ids,
             application_date=application_date,
+            notes=notes,
         )
         
         serializer.instance = loan
