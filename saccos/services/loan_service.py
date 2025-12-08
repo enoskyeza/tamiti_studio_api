@@ -22,7 +22,8 @@ class LoanService:
         purpose,
         repayment_frequency='monthly',
         guarantor_ids=None,
-        application_date=None
+        application_date=None,
+        notes='',
     ):
         """
         Create a new loan application
@@ -36,6 +37,7 @@ class LoanService:
             purpose: Reason for loan
             guarantor_ids: List of guarantor member IDs
             application_date: Optional application date (defaults to today)
+            notes: Optional free-form notes/description to store on the loan
             
         Returns:
             SaccoLoan instance
@@ -63,7 +65,8 @@ class LoanService:
             repayment_frequency=repayment_frequency,
             purpose=purpose,
             application_date=application_date,
-            status='pending'
+            status='pending',
+            notes=notes or '',
         )
         
         # Calculate interest
@@ -499,3 +502,70 @@ class LoanService:
                 'passbook_entry': None,
                 'warning': 'No emergency section found in passbook'
             }
+
+    @staticmethod
+    @transaction.atomic
+    def create_missed_contribution_loan(
+        sacco,
+        member,
+        amount,
+        meeting,
+        notes='',
+        recorded_by=None,
+    ):
+        """Create zero-interest arrears loan for a missed weekly contribution.
+
+        This reuses the SaccoLoan model with loan_type='missed_contribution' so that
+        arrears behave like normal loans in reporting and payments.
+        """
+        from saccos.models import SaccoLoan
+
+        # Coerce amount to Decimal (may come as string from API)
+        amount = Decimal(str(amount))
+
+        # Generate loan number (same pattern as regular loans)
+        loan_count = SaccoLoan.objects.filter(sacco=sacco).count()
+        loan_number = f"{sacco.registration_number or 'LOAN'}-{loan_count + 1:05d}"
+
+        today = timezone.now().date()
+
+        # Build human-friendly purpose/title, e.g.:
+        # "Cash round 7 - week 4 - 51000"
+        if meeting.cash_round:
+            round_number = meeting.cash_round.round_number
+            purpose = f"Cash round {round_number} - week {meeting.week_number} - {amount}"
+        else:
+            purpose = f"Missed contribution - week {meeting.week_number} - {amount}"
+
+        base_note = f"Missed weekly contribution during week {meeting.week_number}"
+        if notes:
+            loan_notes = f"{base_note} - {notes}"
+        else:
+            loan_notes = base_note
+
+        loan = SaccoLoan.objects.create(
+            sacco=sacco,
+            member=member,
+            loan_number=loan_number,
+            principal_amount=amount,
+            interest_rate=Decimal('0'),
+            interest_amount=Decimal('0'),
+            total_amount=amount,
+            application_date=today,
+            approval_date=today,
+            disbursement_date=today,
+            due_date=meeting.meeting_date,
+            duration_months=0,
+            repayment_frequency='weekly',
+            amount_paid_principal=Decimal('0'),
+            amount_paid_interest=Decimal('0'),
+            balance_principal=amount,
+            balance_interest=Decimal('0'),
+            loan_type='missed_contribution',
+            status='disbursed',
+            purpose=purpose,
+            notes=loan_notes,
+            approved_by=recorded_by if recorded_by and getattr(recorded_by, 'id', None) else None,
+        )
+
+        return loan
