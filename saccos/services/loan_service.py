@@ -43,10 +43,23 @@ class LoanService:
             SaccoLoan instance
         """
         from saccos.models import SaccoLoan, LoanGuarantor, SaccoMember
+        import re
         
-        # Generate loan number
-        loan_count = SaccoLoan.objects.filter(sacco=sacco).count()
-        loan_number = f"{sacco.registration_number or 'LOAN'}-{loan_count + 1:05d}"
+        # Generate loan number using MAX to avoid UNIQUE constraint issues after deletions
+        prefix = sacco.registration_number or 'LOAN'
+        last_loan = SaccoLoan.objects.filter(
+            sacco=sacco,
+            loan_number__startswith=prefix
+        ).order_by('-id').first()
+        
+        if last_loan:
+            # Extract the numeric suffix from the last loan number
+            match = re.search(r'-(\d+)$', last_loan.loan_number)
+            next_num = int(match.group(1)) + 1 if match else 1
+        else:
+            next_num = 1
+        
+        loan_number = f"{prefix}-{next_num:05d}"
         
         # Use provided application date or default to today
         if not application_date:
@@ -519,13 +532,27 @@ class LoanService:
         arrears behave like normal loans in reporting and payments.
         """
         from saccos.models import SaccoLoan
+        from django.db.models import Max
+        import re
 
         # Coerce amount to Decimal (may come as string from API)
         amount = Decimal(str(amount))
 
-        # Generate loan number (same pattern as regular loans)
-        loan_count = SaccoLoan.objects.filter(sacco=sacco).count()
-        loan_number = f"{sacco.registration_number or 'LOAN'}-{loan_count + 1:05d}"
+        # Generate loan number using MAX to avoid UNIQUE constraint issues after deletions
+        prefix = sacco.registration_number or 'LOAN'
+        last_loan = SaccoLoan.objects.filter(
+            sacco=sacco,
+            loan_number__startswith=prefix
+        ).order_by('-id').first()
+        
+        if last_loan:
+            # Extract the numeric suffix from the last loan number
+            match = re.search(r'-(\d+)$', last_loan.loan_number)
+            next_num = int(match.group(1)) + 1 if match else 1
+        else:
+            next_num = 1
+        
+        loan_number = f"{prefix}-{next_num:05d}"
 
         today = timezone.now().date()
 

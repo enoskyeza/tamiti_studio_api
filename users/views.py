@@ -33,6 +33,10 @@ class TokenRefreshThrottle(AnonRateThrottle):
     rate = '10/min'  # Allow max 10 refresh attempts per minute per IP
 
 
+@extend_schema(
+    request=None,
+    responses={200: OpenApiResponse(description="Successfully logged out")}
+)
 class LogoutView(APIView):
     permission_classes = [AllowAny]  # Allow unauthenticated logout
     

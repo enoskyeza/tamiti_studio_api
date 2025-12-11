@@ -79,6 +79,10 @@ class CommentListCreateView(generics.ListCreateAPIView):
     serializer_class = CommentSerializer
 
     def get_queryset(self):
+        # Handle schema generation (swagger_fake_view)
+        if getattr(self, 'swagger_fake_view', False):
+            return Comment.objects.none()
+        
         # Required filters: target_type=app_label.model, target_id
         target_type = self.request.query_params.get('target_type')
         target_id = self.request.query_params.get('target_id')

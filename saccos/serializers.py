@@ -385,6 +385,7 @@ class WeeklyContributionSerializer(serializers.ModelSerializer):
     """Serializer for Weekly Contribution"""
     member_number = serializers.CharField(source='member.member_number', read_only=True)
     member_name = serializers.CharField(source='member.user.get_full_name', read_only=True)
+    funding_source = serializers.CharField(default='member', required=False)
     
     class Meta:
         model = WeeklyContribution

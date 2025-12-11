@@ -61,6 +61,10 @@ class AccountViewSet(BaseModelViewSet):
         - Company accounts: visible based on permissions
         - Support scope filtering via query parameter
         """
+        # Handle schema generation (swagger_fake_view)
+        if getattr(self, 'swagger_fake_view', False):
+            return Account.objects.none()
+        
         from permissions.services import PermissionService
         from django.contrib.contenttypes.models import ContentType
         
@@ -1450,11 +1454,15 @@ class CompanySavingsGoalViewSet(BaseModelViewSet):
     """ViewSet for company savings goals"""
     serializer_class = CompanySavingsGoalListSerializer
     search_fields = ['name', 'description', 'department__name']
-    filterset_fields = ['department', 'priority', 'is_active', 'is_completed']
+    filterset_fields = ['department', 'priority', 'is_active']
     ordering = ['-priority', '-target_date']
     
     def get_queryset(self):
         """Filter savings goals based on user permissions"""
+        # Handle schema generation (swagger_fake_view)
+        if getattr(self, 'swagger_fake_view', False):
+            return CompanySavingsGoal.objects.none()
+        
         from permissions.services import PermissionService
         from django.contrib.contenttypes.models import ContentType
         
