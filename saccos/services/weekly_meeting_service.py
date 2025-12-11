@@ -470,7 +470,7 @@ class WeeklyMeetingService:
         Returns:
             dict with reset summary
         """
-        from saccos.models import PassbookEntry, WeeklyContribution
+        from saccos.models import PassbookEntry, WeeklyContribution, SaccoLoan
         from finance.models import Transaction
         
         if meeting.status != 'completed':
@@ -486,7 +486,17 @@ class WeeklyMeetingService:
         entries_count = passbook_entries.count()
         passbook_entries.delete()
         
-        # 3. Delete SACCO account transaction for this meeting
+        # 3. Delete missed_contribution loans created for this meeting
+        # These are created when marking members as defaulters
+        missed_loans = SaccoLoan.objects.filter(
+            sacco=meeting.sacco,
+            loan_type='missed_contribution',
+            purpose__icontains=f"week {meeting.week_number}"
+        )
+        loans_count = missed_loans.count()
+        missed_loans.delete()
+        
+        # 4. Delete SACCO account transaction for this meeting
         # Find transaction by description pattern matching
         try:
             sacco_account = meeting.sacco.get_or_create_account()
@@ -502,19 +512,19 @@ class WeeklyMeetingService:
             print(f"Warning: Could not delete SACCO account transaction: {e}")
             transactions_count = 0
         
-        # 4. Roll back cash round schedule to previous position
+        # 5. Roll back cash round schedule to previous position
         schedule = meeting.sacco.cash_round_schedules.filter(is_active=True).first()
         if schedule and schedule.rotation_order:
             # Move back one position
             schedule.current_position = (schedule.current_position - 1) % len(schedule.rotation_order)
             schedule.save()
         
-        # 5. Reset meeting status and clear completion timestamp
+        # 6. Reset meeting status and clear completion timestamp
         meeting.status = 'in_progress'
         meeting.completed_at = None
         meeting.save()
         
-        # 6. Recalculate totals (will be zero since contributions are deleted)
+        # 7. Recalculate totals (will be zero since contributions are deleted)
         meeting.calculate_totals()
         
         return {
@@ -522,6 +532,7 @@ class WeeklyMeetingService:
             'meeting_id': meeting.id,
             'contributions_deleted': contributions_count,
             'passbook_entries_deleted': entries_count,
+            'loans_deleted': loans_count,
             'sacco_transactions_deleted': transactions_count,
             'status': meeting.status,
             'message': f'Meeting Week {meeting.week_number} has been reset successfully'
