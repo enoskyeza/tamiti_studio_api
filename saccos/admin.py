@@ -15,6 +15,8 @@ from .models import (
     LoanPayment,
     LoanGuarantor,
     SaccoEmergencySupport,
+    SaccoWithdrawal,
+    WithdrawalAllocation,
     SubscriptionPlan,
     SaccoSubscription,
     SubscriptionInvoice,
@@ -55,6 +57,22 @@ class SaccoOrganizationAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
+
+
+@admin.register(SaccoWithdrawal)
+class SaccoWithdrawalAdmin(admin.ModelAdmin):
+    list_display = ['withdrawal_number', 'sacco', 'member', 'amount', 'status', 'request_date', 'approval_date', 'disbursement_date']
+    list_filter = ['sacco', 'status', 'request_date', 'approval_date']
+    search_fields = ['withdrawal_number', 'member__member_number', 'member__user__first_name', 'member__user__last_name']
+    readonly_fields = ['uuid', 'created_at', 'updated_at']
+
+
+@admin.register(WithdrawalAllocation)
+class WithdrawalAllocationAdmin(admin.ModelAdmin):
+    list_display = ['withdrawal', 'section', 'amount', 'passbook_entry', 'created_at']
+    list_filter = ['section']
+    search_fields = ['withdrawal__withdrawal_number', 'section__name']
+    readonly_fields = ['uuid', 'created_at', 'updated_at']
 
 
 @admin.register(SaccoMember)
@@ -101,8 +119,8 @@ class MemberPassbookAdmin(admin.ModelAdmin):
 
 @admin.register(PassbookSection)
 class PassbookSectionAdmin(admin.ModelAdmin):
-    list_display = ['name', 'sacco', 'section_type', 'is_compulsory', 'weekly_amount', 'display_order', 'is_active']
-    list_filter = ['sacco', 'section_type', 'is_compulsory', 'is_active']
+    list_display = ['name', 'sacco', 'section_type', 'is_compulsory', 'withdrawable', 'weekly_amount', 'display_order', 'is_active']
+    list_filter = ['sacco', 'section_type', 'is_compulsory', 'withdrawable', 'is_active']
     search_fields = ['name', 'description']
     readonly_fields = ['uuid', 'created_at', 'updated_at']
     ordering = ['sacco', 'display_order', 'name']
@@ -112,7 +130,7 @@ class PassbookSectionAdmin(admin.ModelAdmin):
             'fields': ('sacco', 'name', 'section_type', 'description')
         }),
         ('Configuration', {
-            'fields': ('is_compulsory', 'weekly_amount', 'allow_variable_amounts')
+            'fields': ('is_compulsory', 'withdrawable', 'weekly_amount', 'allow_variable_amounts')
         }),
         ('Display', {
             'fields': ('display_order', 'is_active', 'color')

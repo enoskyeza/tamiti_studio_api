@@ -10,7 +10,8 @@ from .models import (
     PassbookSection, PassbookEntry, DeductionRule,
     CashRound, CashRoundMember, CashRoundSchedule,
     WeeklyMeeting, WeeklyContribution,
-    SaccoLoan, LoanPayment, LoanGuarantor, SaccoEmergencySupport
+    SaccoLoan, LoanPayment, LoanGuarantor, SaccoEmergencySupport,
+    SaccoWithdrawal
 )
 from .serializers import (
     SaccoOrganizationSerializer, SaccoMemberSerializer, SaccoMemberListSerializer,
@@ -21,7 +22,8 @@ from .serializers import (
     CashRoundScheduleSerializer, WeeklyMeetingSerializer,
     WeeklyContributionSerializer,
     SaccoLoanSerializer, LoanPaymentSerializer,
-    LoanGuarantorSerializer, SaccoEmergencySupportSerializer
+    LoanGuarantorSerializer, SaccoEmergencySupportSerializer,
+    SaccoWithdrawalSerializer
 )
 from .services.passbook_service import PassbookService
 from .services.cash_round_service import CashRoundService
@@ -681,7 +683,7 @@ class CashRoundViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
             })
         except ValueError as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
-    
+
     @action(detail=True, methods=['post'], url_path='start-next-meeting')
     def start_next_meeting(self, request, pk=None, sacco_pk=None):
         """Create the next meeting in the cash round"""
@@ -765,6 +767,174 @@ class CashRoundViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
         active_rounds = CashRoundService.get_active_rounds(sacco)
         serializer = CashRoundListSerializer(active_rounds, many=True)
         return Response(serializer.data)
+
+
+class SaccoWithdrawalViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
+    queryset = SaccoWithdrawal.objects.all()
+    serializer_class = SaccoWithdrawalSerializer
+    permission_classes = [IsAuthenticated]
+
+    def _is_secretary(self):
+        membership = getattr(self.request.user, 'sacco_membership', None)
+        if not membership:
+            return False
+        role = (membership.role or '').lower()
+        return bool(membership.is_secretary or ('secretary' in role))
+
+    def get_queryset(self):
+        sacco_id = self.request.query_params.get('sacco')
+        member_id = self.request.query_params.get('member')
+        withdrawal_status = self.request.query_params.get('status')
+
+        queryset = SaccoWithdrawal.objects.all().select_related(
+            'member', 'member__user'
+        ).prefetch_related(
+            'allocations', 'allocations__section'
+        )
+
+        if sacco_id:
+            queryset = queryset.filter(sacco_id=sacco_id)
+        elif hasattr(self.request.user, 'sacco_membership'):
+            queryset = queryset.filter(sacco=self.request.user.sacco_membership.sacco)
+        else:
+            return SaccoWithdrawal.objects.none()
+
+        if self._is_secretary():
+            if member_id:
+                queryset = queryset.filter(member_id=member_id)
+        else:
+            if not hasattr(self.request.user, 'sacco_membership'):
+                return SaccoWithdrawal.objects.none()
+            queryset = queryset.filter(member=self.request.user.sacco_membership)
+
+        if withdrawal_status:
+            queryset = queryset.filter(status=withdrawal_status)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        from rest_framework.exceptions import ValidationError
+        from saccos.services.withdrawal_service import WithdrawalService
+
+        sacco_id = self.request.data.get('sacco')
+        member_id = self.request.data.get('member')
+
+        if sacco_id:
+            sacco = get_object_or_404(SaccoOrganization, id=sacco_id)
+        elif hasattr(self.request.user, 'sacco_membership'):
+            sacco = self.request.user.sacco_membership.sacco
+        else:
+            raise ValidationError({'sacco': 'SACCO ID is required'})
+
+        if not member_id:
+            raise ValidationError({'member': 'Member ID is required'})
+        member = get_object_or_404(SaccoMember, id=member_id, sacco=sacco)
+
+        if not self._is_secretary() and hasattr(self.request.user, 'sacco_membership'):
+            if member.id != self.request.user.sacco_membership.id:
+                raise ValidationError({'member': 'You can only create withdrawals for your own account'})
+
+        try:
+            withdrawal = WithdrawalService.create_withdrawal_request(
+                sacco=sacco,
+                member=member,
+                amount=self.request.data.get('amount'),
+                requested_by=self.request.user,
+                request_date=self.request.data.get('request_date'),
+                reason=self.request.data.get('reason', ''),
+                notes=self.request.data.get('notes', ''),
+                allocations=self.request.data.get('allocations'),
+            )
+        except ValueError as e:
+            raise ValidationError({'error': str(e)})
+
+        serializer.instance = withdrawal
+
+    @action(detail=False, methods=['get'], url_path='available')
+    def available(self, request):
+        from rest_framework.exceptions import ValidationError
+        from saccos.services.withdrawal_service import WithdrawalService
+
+        sacco_id = request.query_params.get('sacco')
+        member_id = request.query_params.get('member')
+
+        if sacco_id:
+            sacco = get_object_or_404(SaccoOrganization, id=sacco_id)
+        elif hasattr(request.user, 'sacco_membership'):
+            sacco = request.user.sacco_membership.sacco
+        else:
+            raise ValidationError({'sacco': 'SACCO ID is required'})
+
+        if member_id:
+            member = get_object_or_404(SaccoMember, id=member_id, sacco=sacco)
+        elif hasattr(request.user, 'sacco_membership'):
+            member = request.user.sacco_membership
+        else:
+            raise ValidationError({'member': 'Member is required'})
+
+        if not self._is_secretary() and hasattr(request.user, 'sacco_membership'):
+            if member.id != request.user.sacco_membership.id:
+                return Response({'error': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
+
+        data = WithdrawalService.get_available_summary(sacco=sacco, member=member)
+        return Response(data)
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, pk=None):
+        from saccos.services.withdrawal_service import WithdrawalService
+
+        if not self._is_secretary():
+            return Response({'error': 'Secretary access required'}, status=status.HTTP_403_FORBIDDEN)
+
+        withdrawal = self.get_object()
+        try:
+            updated = WithdrawalService.approve_withdrawal(
+                withdrawal=withdrawal,
+                approved_by=request.user,
+                approval_date=request.data.get('approval_date'),
+            )
+            serializer = self.get_serializer(updated)
+            return Response(serializer.data)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def reject(self, request, pk=None):
+        from saccos.services.withdrawal_service import WithdrawalService
+
+        if not self._is_secretary():
+            return Response({'error': 'Secretary access required'}, status=status.HTTP_403_FORBIDDEN)
+
+        withdrawal = self.get_object()
+        try:
+            updated = WithdrawalService.reject_withdrawal(
+                withdrawal=withdrawal,
+                rejected_by=request.user,
+                rejection_reason=request.data.get('rejection_reason', ''),
+            )
+            serializer = self.get_serializer(updated)
+            return Response(serializer.data)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def disburse(self, request, pk=None):
+        from saccos.services.withdrawal_service import WithdrawalService
+
+        if not self._is_secretary():
+            return Response({'error': 'Secretary access required'}, status=status.HTTP_403_FORBIDDEN)
+
+        withdrawal = self.get_object()
+        try:
+            updated = WithdrawalService.disburse_withdrawal(
+                withdrawal=withdrawal,
+                disbursement_date=request.data.get('disbursement_date'),
+                recorded_by=request.user,
+            )
+            serializer = self.get_serializer(updated)
+            return Response(serializer.data)
+        except ValueError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class CashRoundScheduleViewSet(SaccoScopedMixin, viewsets.ModelViewSet):

@@ -15,6 +15,7 @@ from .views import (
     LoanPaymentViewSet,
     LoanGuarantorViewSet,
     SaccoEmergencySupportViewSet,
+    SaccoWithdrawalViewSet,
 )
 from .views_phase5 import (
     get_member_statement, get_loan_portfolio_report, get_financial_statement,
@@ -51,6 +52,7 @@ router.register(r'loans', SaccoLoanViewSet, basename='sacco-loan')
 router.register(r'loan-payments', LoanPaymentViewSet, basename='loan-payment')
 router.register(r'loan-guarantors', LoanGuarantorViewSet, basename='loan-guarantor')
 router.register(r'emergency-support', SaccoEmergencySupportViewSet, basename='emergency-support')
+router.register(r'withdrawals', SaccoWithdrawalViewSet, basename='sacco-withdrawal')
 
 # Phase 6: SaaS Features
 router.register(r'subscription-plans', SubscriptionPlanViewSet, basename='subscription-plan')
