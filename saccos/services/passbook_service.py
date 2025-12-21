@@ -80,6 +80,14 @@ class PassbookService:
             **kwargs
         )
         
+        recalc_result = PassbookService.recalculate_section_running_balances_for_ids(
+            passbook_id=passbook.id,
+            section_id=section.id,
+            apply_changes=True,
+        )
+        if recalc_result.get('entries_changed'):
+            entry.refresh_from_db(fields=['balance_after'])
+
         return entry
     
     @staticmethod
@@ -94,14 +102,38 @@ class PassbookService:
         Returns:
             Decimal: Current balance
         """
+        return passbook.get_section_balance(section)
+    
+    @staticmethod
+    def recalculate_section_running_balances_for_ids(passbook_id, section_id, apply_changes=True):
         from saccos.models import PassbookEntry
-        
-        last_entry = PassbookEntry.objects.filter(
-            passbook=passbook,
-            section=section
-        ).order_by('-created_at').first()
-        
-        return last_entry.balance_after if last_entry else Decimal('0')
+
+        entries = list(
+            PassbookEntry.objects.filter(
+                passbook_id=passbook_id,
+                section_id=section_id,
+            ).order_by('transaction_date', 'created_at', 'id')
+        )
+
+        running_balance = Decimal('0')
+        changed = []
+        for entry in entries:
+            if entry.transaction_type == 'credit':
+                running_balance += entry.amount
+            else:
+                running_balance -= entry.amount
+
+            if entry.balance_after != running_balance:
+                entry.balance_after = running_balance
+                changed.append(entry)
+
+        if apply_changes and changed:
+            PassbookEntry.objects.bulk_update(changed, ['balance_after'])
+
+        return {
+            'entries_checked': len(entries),
+            'entries_changed': len(changed),
+        }
     
     @staticmethod
     def get_all_balances(passbook):
