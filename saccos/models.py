@@ -313,6 +313,11 @@ class PassbookSection(BaseModel):
         default=True,
         help_text="Allow members to contribute different amounts"
     )
+
+    withdrawable = models.BooleanField(
+        default=False,
+        help_text="If true, balances in this section can be withdrawn by members"
+    )
     
     # Display
     display_order = models.PositiveIntegerField(default=0)
@@ -336,6 +341,7 @@ class PassbookSection(BaseModel):
                 'name': 'Compulsory Savings',
                 'section_type': 'savings',
                 'is_compulsory': True,
+                'withdrawable': True,
                 'weekly_amount': 2000,
                 'display_order': 1,
                 'color': '#10B981'
@@ -345,6 +351,7 @@ class PassbookSection(BaseModel):
                 'section_type': 'savings',
                 'is_compulsory': False,
                 'allow_variable_amounts': True,
+                'withdrawable': True,
                 'display_order': 2,
                 'color': '#059669'
             },
@@ -360,6 +367,7 @@ class PassbookSection(BaseModel):
                 'name': 'Development',
                 'section_type': 'development',
                 'is_compulsory': True,
+                'withdrawable': True,
                 'weekly_amount': 5000,
                 'display_order': 4,
                 'color': '#F59E0B'
@@ -1419,6 +1427,91 @@ class SaccoEmergencySupport(BaseModel):
     
     def __str__(self):
         return f"{self.member.member_number} - Emergency {self.amount} on {self.support_date}"
+
+
+class SaccoWithdrawal(BaseModel):
+    sacco = models.ForeignKey(
+        SaccoOrganization,
+        on_delete=models.CASCADE,
+        related_name='withdrawals'
+    )
+    member = models.ForeignKey(
+        SaccoMember,
+        on_delete=models.CASCADE,
+        related_name='withdrawals'
+    )
+
+    withdrawal_number = models.CharField(max_length=50, unique=True)
+    request_date = models.DateField()
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    reason = models.TextField(blank=True)
+    notes = models.TextField(blank=True)
+
+    status = models.CharField(
+        max_length=20,
+        choices=[
+            ('pending', 'Pending'),
+            ('approved', 'Approved'),
+            ('disbursed', 'Disbursed'),
+            ('rejected', 'Rejected'),
+        ],
+        default='pending'
+    )
+
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='requested_withdrawals'
+    )
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_withdrawals'
+    )
+    approval_date = models.DateField(null=True, blank=True)
+    disbursement_date = models.DateField(null=True, blank=True)
+    rejection_reason = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ['-request_date']
+        indexes = [
+            models.Index(fields=['sacco', 'status']),
+            models.Index(fields=['member', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.withdrawal_number} - {self.member.member_number} - {self.amount}"
+
+
+class WithdrawalAllocation(BaseModel):
+    withdrawal = models.ForeignKey(
+        SaccoWithdrawal,
+        on_delete=models.CASCADE,
+        related_name='allocations'
+    )
+    section = models.ForeignKey(
+        PassbookSection,
+        on_delete=models.PROTECT,
+        related_name='withdrawal_allocations'
+    )
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    passbook_entry = models.ForeignKey(
+        PassbookEntry,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='withdrawal_allocations'
+    )
+
+    class Meta:
+        unique_together = [['withdrawal', 'section']]
+
+    def __str__(self):
+        return f"{self.withdrawal.withdrawal_number} - {self.section.name} - {self.amount}"
 # ============================================================================
 # PHASE 6: SAAS FEATURES
 # ============================================================================

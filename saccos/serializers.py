@@ -5,6 +5,7 @@ from .models import (
     CashRound, CashRoundMember, CashRoundSchedule,
     WeeklyMeeting, WeeklyContribution,
     SaccoLoan, LoanPayment, LoanGuarantor, SaccoEmergencySupport,
+    SaccoWithdrawal, WithdrawalAllocation,
     SubscriptionPlan, SaccoSubscription, SubscriptionInvoice, UsageMetrics,
     SaccoAccount
 )
@@ -194,6 +195,7 @@ class PassbookSectionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'uuid', 'sacco', 'name', 'section_type', 'description',
             'is_compulsory', 'weekly_amount', 'allow_variable_amounts',
+            'withdrawable',
             'display_order', 'is_active', 'color',
             'created_at', 'updated_at'
         ]
@@ -555,6 +557,47 @@ class SaccoEmergencySupportSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'uuid', 'member_number', 'member_name', 'approved_by_name',
             'passbook_entry', 'created_at', 'updated_at'
+        ]
+
+
+class WithdrawalAllocationSerializer(serializers.ModelSerializer):
+    section_name = serializers.CharField(source='section.name', read_only=True)
+    section_type = serializers.CharField(source='section.section_type', read_only=True)
+    section_color = serializers.CharField(source='section.color', read_only=True)
+
+    class Meta:
+        model = WithdrawalAllocation
+        fields = [
+            'id', 'uuid', 'withdrawal', 'section', 'section_name', 'section_type',
+            'section_color', 'amount', 'passbook_entry', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'uuid', 'section_name', 'section_type', 'section_color',
+            'passbook_entry', 'created_at', 'updated_at'
+        ]
+
+
+class SaccoWithdrawalSerializer(serializers.ModelSerializer):
+    member_number = serializers.CharField(source='member.member_number', read_only=True)
+    member_name = serializers.CharField(source='member.user.get_full_name', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True)
+    requested_by_name = serializers.CharField(source='requested_by.get_full_name', read_only=True)
+    allocations = WithdrawalAllocationSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = SaccoWithdrawal
+        fields = [
+            'id', 'uuid', 'sacco', 'member', 'member_number', 'member_name',
+            'withdrawal_number', 'request_date', 'amount', 'reason', 'notes',
+            'status', 'requested_by', 'requested_by_name',
+            'approved_by', 'approved_by_name', 'approval_date',
+            'disbursement_date', 'rejection_reason',
+            'allocations', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'uuid', 'withdrawal_number', 'member_number', 'member_name',
+            'requested_by_name', 'approved_by_name', 'approval_date',
+            'disbursement_date', 'allocations', 'created_at', 'updated_at'
         ]
 
 
