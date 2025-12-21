@@ -483,8 +483,19 @@ class WeeklyMeetingService:
         
         # 2. Delete all passbook entries linked to this meeting
         passbook_entries = PassbookEntry.objects.filter(meeting=meeting)
+        affected_passbook_sections = list(
+            passbook_entries.values_list('passbook_id', 'section_id').distinct()
+        )
         entries_count = passbook_entries.count()
         passbook_entries.delete()
+
+        from saccos.services.passbook_service import PassbookService
+        for passbook_id, section_id in affected_passbook_sections:
+            PassbookService.recalculate_section_running_balances_for_ids(
+                passbook_id=passbook_id,
+                section_id=section_id,
+                apply_changes=True,
+            )
         
         # 3. Delete missed_contribution loans created for this meeting
         # These are created when marking members as defaulters
@@ -499,14 +510,32 @@ class WeeklyMeetingService:
         # 4. Delete SACCO account transaction for this meeting
         # Find transaction by description pattern matching
         try:
+            from decimal import Decimal
+            from django.db.models import Sum
+            from common.enums import TransactionType
+
             sacco_account = meeting.sacco.get_or_create_account()
+            account = sacco_account.account
             transactions = Transaction.objects.filter(
-                account=sacco_account.account,
+                account=account,
                 date=meeting.meeting_date,
                 description__icontains=f"Week {meeting.week_number}"
             )
             transactions_count = transactions.count()
             transactions.delete()
+
+            remaining = Transaction.objects.filter(account=account)
+
+            income_amount = remaining.filter(type=TransactionType.INCOME).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            income_charges = remaining.filter(type=TransactionType.INCOME).aggregate(total=Sum('transaction_charge'))['total'] or Decimal('0')
+            expense_amount = remaining.filter(type=TransactionType.EXPENSE).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+            expense_charges = remaining.filter(type=TransactionType.EXPENSE).aggregate(total=Sum('transaction_charge'))['total'] or Decimal('0')
+
+            expected_balance = (income_amount - income_charges) - (expense_amount + expense_charges)
+            if account.balance != expected_balance:
+                account.balance = expected_balance
+                account.save(update_fields=['balance'])
+
         except Exception as e:
             # Log but don't fail if SACCO account transaction cleanup fails
             print(f"Warning: Could not delete SACCO account transaction: {e}")

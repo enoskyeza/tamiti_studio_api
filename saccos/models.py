@@ -505,11 +505,20 @@ class PassbookEntry(BaseModel):
     def delete(self, *args, **kwargs):
         # Store meeting reference before deletion
         meeting = self.meeting
+        passbook_id = self.passbook_id
+        section_id = self.section_id
         super().delete(*args, **kwargs)
         
         # Update meeting totals after deletion
         if meeting:
             meeting.calculate_totals()
+
+        from saccos.services.passbook_service import PassbookService
+        PassbookService.recalculate_section_running_balances_for_ids(
+            passbook_id=passbook_id,
+            section_id=section_id,
+            apply_changes=True,
+        )
     
     def get_previous_balance(self):
         """Get the balance before this entry"""

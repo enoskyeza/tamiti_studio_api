@@ -360,6 +360,26 @@ class Transaction(BaseModel):
 
             self.account.apply_transaction(self.type, total_amount)
 
+    def delete(self, *args, **kwargs):
+        account = self.account
+        tx_type = self.type
+        amount = self.amount
+        charge = self.transaction_charge
+        super().delete(*args, **kwargs)
+
+        if account:
+            total_amount = amount
+            if tx_type == TransactionType.INCOME:
+                total_amount = amount - (charge or 0)
+            else:
+                total_amount = amount + (charge or 0)
+
+            if tx_type == TransactionType.INCOME:
+                account.balance -= total_amount
+            else:
+                account.balance += total_amount
+            account.save(update_fields=['balance'])
+
 
 class Quotation(BaseModel):
     party = models.ForeignKey(Party, on_delete=models.CASCADE)
