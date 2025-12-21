@@ -77,10 +77,16 @@ class WithdrawalAllocationAdmin(admin.ModelAdmin):
 
 @admin.register(SaccoMember)
 class SaccoMemberAdmin(admin.ModelAdmin):
-    list_display = ['member_number', 'user', 'sacco', 'role', 'status', 'date_joined']
+    list_display = ['id', 'user_id_display', 'member_number', 'user', 'sacco', 'role', 'status', 'date_joined']
     list_filter = ['status', 'sacco', 'role', 'is_secretary', 'is_treasurer', 'is_chairperson', 'date_joined']
     search_fields = ['member_number', 'user__username', 'user__first_name', 'user__last_name', 'national_id']
     readonly_fields = ['uuid', 'date_joined', 'created_at', 'updated_at']
+
+    def user_id_display(self, obj):
+        return obj.user_id
+
+    user_id_display.short_description = 'User ID'
+    user_id_display.admin_order_field = 'user_id'
     
     fieldsets = (
         ('Basic Information', {
