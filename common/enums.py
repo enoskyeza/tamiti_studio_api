@@ -75,6 +75,7 @@ class PaymentCategory(BaseEnum):
     SACCO_WELFARE = 'sacco_welfare', 'SACCO Welfare'
     SACCO_DEVELOPMENT = 'sacco_development', 'SACCO Development'
     SACCO_EMERGENCY = 'sacco_emergency', 'SACCO Emergency Support'
+    SACCO_WITHDRAWAL = 'sacco_withdrawal', 'SACCO Withdrawal'
 
 
 class TaskStatus(BaseEnum):

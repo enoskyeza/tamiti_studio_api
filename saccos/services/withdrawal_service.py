@@ -246,6 +246,8 @@ class WithdrawalService:
     @transaction.atomic
     def disburse_withdrawal(withdrawal, disbursement_date=None, recorded_by=None):
         from saccos.services.passbook_service import PassbookService
+        from saccos.services.sacco_account_service import SaccoAccountService
+        from common.enums import TransactionType, PaymentCategory
 
         if withdrawal.status != 'approved':
             raise ValueError(f"Cannot disburse withdrawal with status: {withdrawal.status}")
@@ -275,6 +277,17 @@ class WithdrawalService:
             )
             alloc.passbook_entry = entry
             alloc.save()
+
+        sacco_account = withdrawal.sacco.get_or_create_account()
+        SaccoAccountService.record_transaction(
+            sacco_account=sacco_account,
+            transaction_type=TransactionType.EXPENSE,
+            amount=withdrawal.amount,
+            category=PaymentCategory.SACCO_WITHDRAWAL,
+            description=f"Withdrawal - {withdrawal.withdrawal_number} ({withdrawal.member.member_number})",
+            date=disbursement_date_obj,
+            recorded_by=recorded_by or withdrawal.approved_by,
+        )
 
         withdrawal.status = 'disbursed'
         withdrawal.disbursement_date = disbursement_date_obj

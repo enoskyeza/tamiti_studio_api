@@ -334,14 +334,14 @@ class LoanService:
     
     @staticmethod
     @transaction.atomic
-    def reject_loan(loan, rejected_by, rejection_reason):
+    def reject_loan(loan, rejected_by, rejection_reason=''):
         """
         Reject a loan application
         
         Args:
             loan: SaccoLoan instance
             rejected_by: User rejecting the loan
-            rejection_reason: Reason for rejection
+            rejection_reason: Optional reason for rejection
             
         Returns:
             Updated loan
@@ -351,7 +351,7 @@ class LoanService:
         
         loan.status = 'rejected'
         loan.approved_by = rejected_by  # Use same field for consistency
-        loan.rejection_reason = rejection_reason
+        loan.rejection_reason = rejection_reason or ''
         loan.save()
         
         return loan
