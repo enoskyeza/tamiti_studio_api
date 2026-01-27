@@ -1,5 +1,5 @@
 from decimal import Decimal
-from django.db import transaction
+from django.db import transaction, IntegrityError
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from dateutil.relativedelta import relativedelta
@@ -10,6 +10,28 @@ class LoanService:
     Business logic for loan management
     Phase 4: Loan Management
     """
+
+    @staticmethod
+    def _generate_unique_loan_number(*, sacco):
+        from saccos.models import SaccoLoan
+        import re
+
+        prefix = sacco.registration_number or f"LOAN{sacco.id}"
+        last_loan = SaccoLoan.objects.filter(
+            loan_number__startswith=f"{prefix}-"
+        ).order_by('-id').first()
+
+        if last_loan:
+            match = re.search(r'-(\d+)$', last_loan.loan_number)
+            next_num = int(match.group(1)) + 1 if match else 1
+        else:
+            next_num = 1
+
+        while True:
+            candidate = f"{prefix}-{next_num:05d}"
+            if not SaccoLoan.objects.filter(loan_number=candidate).exists():
+                return candidate
+            next_num += 1
     
     @staticmethod
     @transaction.atomic
@@ -43,23 +65,6 @@ class LoanService:
             SaccoLoan instance
         """
         from saccos.models import SaccoLoan, LoanGuarantor, SaccoMember
-        import re
-        
-        # Generate loan number using MAX to avoid UNIQUE constraint issues after deletions
-        prefix = sacco.registration_number or 'LOAN'
-        last_loan = SaccoLoan.objects.filter(
-            sacco=sacco,
-            loan_number__startswith=prefix
-        ).order_by('-id').first()
-        
-        if last_loan:
-            # Extract the numeric suffix from the last loan number
-            match = re.search(r'-(\d+)$', last_loan.loan_number)
-            next_num = int(match.group(1)) + 1 if match else 1
-        else:
-            next_num = 1
-        
-        loan_number = f"{prefix}-{next_num:05d}"
         
         # Use provided application date or default to today
         if not application_date:
@@ -68,23 +73,32 @@ class LoanService:
             application_date = parse_date(application_date) or timezone.now().date()
         
         # Create loan
-        loan = SaccoLoan(
-            sacco=sacco,
-            member=member,
-            loan_number=loan_number,
-            principal_amount=principal_amount,
-            interest_rate=interest_rate,
-            duration_months=duration_months,
-            repayment_frequency=repayment_frequency,
-            purpose=purpose,
-            application_date=application_date,
-            status='pending',
-            notes=notes or '',
-        )
-        
-        # Calculate interest
-        loan.calculate_interest()
-        loan.save()
+        loan = None
+        for _ in range(20):
+            loan_number = LoanService._generate_unique_loan_number(sacco=sacco)
+            candidate = SaccoLoan(
+                sacco=sacco,
+                member=member,
+                loan_number=loan_number,
+                principal_amount=principal_amount,
+                interest_rate=interest_rate,
+                duration_months=duration_months,
+                repayment_frequency=repayment_frequency,
+                purpose=purpose,
+                application_date=application_date,
+                status='pending',
+                notes=notes or '',
+            )
+            candidate.calculate_interest()
+            try:
+                candidate.save()
+                loan = candidate
+                break
+            except IntegrityError:
+                continue
+
+        if loan is None:
+            raise IntegrityError('Could not generate a unique loan_number')
         
         # Add guarantors
         if guarantor_ids:
@@ -125,18 +139,10 @@ class LoanService:
         loan.approved_by = approved_by
         loan.approval_date = timezone.now().date()
         
-        if disbursement_date:
-            # Convert string dates from API to date objects
-            if isinstance(disbursement_date, str):
-                parsed = parse_date(disbursement_date)
-                if not parsed:
-                    raise ValueError("Invalid disbursement date format; expected YYYY-MM-DD")
-                disbursement_date = parsed
-            loan.disbursement_date = disbursement_date
-            loan.due_date = disbursement_date + relativedelta(months=loan.duration_months)
-            loan.status = 'disbursed'
-        
         loan.save()
+
+        if disbursement_date:
+            LoanService.disburse_loan(loan=loan, disbursement_date=disbursement_date)
         return loan
     
     @staticmethod
@@ -154,6 +160,9 @@ class LoanService:
         """
         from saccos.models import PassbookSection
         from saccos.services.passbook_service import PassbookService
+        from saccos.services.sacco_account_service import SaccoAccountService
+        from common.enums import TransactionType, PaymentCategory
+        from finance.models import Transaction
         
         if loan.status not in ['approved', 'disbursed']:
             raise ValueError(f"Cannot disburse loan with status: {loan.status}")
@@ -189,8 +198,28 @@ class LoanService:
                 description=f'Loan disbursed - {loan.loan_number}',
                 recorded_by=loan.approved_by,
                 transaction_date=disbursement_date,
-                reference_number=loan.loan_number
+                reference_number=loan.loan_number,
+                treasury_opt_out=True,
             )
+
+            sacco_account = loan.sacco.get_or_create_account()
+            marker = f"SaccoLoan#{loan.id}"
+            exists = Transaction.objects.filter(
+                account=sacco_account.account,
+                description__contains=marker,
+            ).exists()
+            if not exists:
+                SaccoAccountService.record_transaction(
+                    sacco_account=sacco_account,
+                    transaction_type=TransactionType.EXPENSE,
+                    amount=loan.principal_amount,
+                    category=PaymentCategory.SACCO_LOAN_DISBURSEMENT,
+                    description=f"Loan disbursement - {marker} - {loan.loan_number} ({loan.member.member_number})",
+                    date=disbursement_date,
+                    related_loan=loan,
+                    recorded_by=loan.approved_by,
+                    is_automated=True,
+                )
             
             return {
                 'loan': loan,
@@ -236,6 +265,9 @@ class LoanService:
         """
         from saccos.models import LoanPayment, PassbookSection
         from saccos.services.passbook_service import PassbookService
+        from saccos.services.sacco_account_service import SaccoAccountService
+        from common.enums import TransactionType, PaymentCategory
+        from finance.models import Transaction
         
         if loan.status not in ['disbursed', 'active']:
             raise ValueError(f"Cannot record payment for loan with status: {loan.status}")
@@ -290,7 +322,8 @@ class LoanService:
                     description=f'Loan payment - {loan.loan_number}',
                     recorded_by=recorded_by,
                     transaction_date=payment_date,
-                    reference_number=reference_number or payment.id
+                    reference_number=reference_number or payment.id,
+                    treasury_opt_out=True,
                 )
                 
                 payment.passbook_entry = passbook_entry
@@ -317,13 +350,33 @@ class LoanService:
                     description=f'Interest payment - {loan.loan_number}',
                     recorded_by=recorded_by,
                     transaction_date=payment_date,
-                    reference_number=reference_number or payment.id
+                    reference_number=reference_number or payment.id,
+                    treasury_opt_out=True,
                 )
             
             except PassbookSection.DoesNotExist:
                 pass
         
         # Loan balances are auto-updated in LoanPayment.save()
+
+        sacco_account = loan.sacco.get_or_create_account()
+        marker = f"LoanPayment#{payment.id}"
+        exists = Transaction.objects.filter(
+            account=sacco_account.account,
+            description__contains=marker,
+        ).exists()
+        if not exists:
+            SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=TransactionType.INCOME,
+                amount=payment.total_amount,
+                category=PaymentCategory.SACCO_LOAN_REPAYMENT,
+                description=f"Loan repayment - {marker} - {loan.loan_number} ({loan.member.member_number})",
+                date=payment.payment_date,
+                related_loan=loan,
+                recorded_by=recorded_by,
+                is_automated=True,
+            )
         
         return {
             'payment': payment,
@@ -334,14 +387,14 @@ class LoanService:
     
     @staticmethod
     @transaction.atomic
-    def reject_loan(loan, rejected_by, rejection_reason):
+    def reject_loan(loan, rejected_by, rejection_reason=''):
         """
         Reject a loan application
         
         Args:
             loan: SaccoLoan instance
             rejected_by: User rejecting the loan
-            rejection_reason: Reason for rejection
+            rejection_reason: Optional reason for rejection
             
         Returns:
             Updated loan
@@ -351,7 +404,7 @@ class LoanService:
         
         loan.status = 'rejected'
         loan.approved_by = rejected_by  # Use same field for consistency
-        loan.rejection_reason = rejection_reason
+        loan.rejection_reason = rejection_reason or ''
         loan.save()
         
         return loan
@@ -532,29 +585,49 @@ class LoanService:
         arrears behave like normal loans in reporting and payments.
         """
         from saccos.models import SaccoLoan
-        from django.db.models import Max
-        import re
+        
 
         # Coerce amount to Decimal (may come as string from API)
         amount = Decimal(str(amount))
 
-        # Generate loan number using MAX to avoid UNIQUE constraint issues after deletions
-        prefix = sacco.registration_number or 'LOAN'
-        last_loan = SaccoLoan.objects.filter(
-            sacco=sacco,
-            loan_number__startswith=prefix
-        ).order_by('-id').first()
-        
-        if last_loan:
-            # Extract the numeric suffix from the last loan number
-            match = re.search(r'-(\d+)$', last_loan.loan_number)
-            next_num = int(match.group(1)) + 1 if match else 1
-        else:
-            next_num = 1
-        
-        loan_number = f"{prefix}-{next_num:05d}"
+        loan = None
+        for _ in range(20):
+            loan_number = LoanService._generate_unique_loan_number(sacco=sacco)
+            candidate = SaccoLoan(
+                sacco=sacco,
+                member=member,
+                loan_number=loan_number,
+                principal_amount=amount,
+                interest_rate=Decimal('0'),
+                interest_amount=Decimal('0'),
+                total_amount=amount,
+                application_date=timezone.now().date(),
+                approval_date=timezone.now().date(),
+                disbursement_date=timezone.now().date(),
+                due_date=meeting.meeting_date,
+                duration_months=0,
+                repayment_frequency='weekly',
+                amount_paid_principal=Decimal('0'),
+                amount_paid_interest=Decimal('0'),
+                balance_principal=amount,
+                balance_interest=Decimal('0'),
+                loan_type='missed_contribution',
+                status='disbursed',
+                purpose='',
+                notes='',
+                approved_by=recorded_by if recorded_by and getattr(recorded_by, 'id', None) else None,
+            )
+            try:
+                candidate.save()
+                loan = candidate
+                break
+            except IntegrityError:
+                continue
 
-        today = timezone.now().date()
+        if loan is None:
+            raise IntegrityError('Could not generate a unique loan_number')
+
+        today = loan.application_date
 
         # Build human-friendly purpose/title, e.g.:
         # "Cash round 7 - week 4 - 51000"
@@ -564,35 +637,12 @@ class LoanService:
         else:
             purpose = f"Missed contribution - week {meeting.week_number} - {amount}"
 
-        base_note = f"Missed weekly contribution during week {meeting.week_number}"
+        loan_notes = f"Missed weekly contribution during week {meeting.week_number}"
         if notes:
-            loan_notes = f"{base_note} - {notes}"
-        else:
-            loan_notes = base_note
+            loan_notes = f"{loan_notes} - {notes}"
 
-        loan = SaccoLoan.objects.create(
-            sacco=sacco,
-            member=member,
-            loan_number=loan_number,
-            principal_amount=amount,
-            interest_rate=Decimal('0'),
-            interest_amount=Decimal('0'),
-            total_amount=amount,
-            application_date=today,
-            approval_date=today,
-            disbursement_date=today,
-            due_date=meeting.meeting_date,
-            duration_months=0,
-            repayment_frequency='weekly',
-            amount_paid_principal=Decimal('0'),
-            amount_paid_interest=Decimal('0'),
-            balance_principal=amount,
-            balance_interest=Decimal('0'),
-            loan_type='missed_contribution',
-            status='disbursed',
-            purpose=purpose,
-            notes=loan_notes,
-            approved_by=recorded_by if recorded_by and getattr(recorded_by, 'id', None) else None,
-        )
+        loan.purpose = purpose
+        loan.notes = loan_notes
+        loan.save(update_fields=['purpose', 'notes'])
 
         return loan

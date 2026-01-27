@@ -4,8 +4,9 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.db.models import Sum
 
-from common.enums import TransactionType
+from common.enums import TransactionType, PaymentCategory
 from saccos.services.passbook_service import PassbookService
+from saccos.services.sacco_account_service import SaccoAccountService
 
 
 class Command(BaseCommand):
@@ -19,6 +20,36 @@ class Command(BaseCommand):
         parser.add_argument('--section-id', type=int, default=None)
         parser.add_argument('--skip-passbooks', action='store_true')
         parser.add_argument('--skip-sacco-accounts', action='store_true')
+        parser.add_argument(
+            '--backfill-sacco-transactions-from-passbooks',
+            action='store_true',
+            help='Create/link missing SACCO finance transactions for eligible passbook entries (non-meeting by default).',
+        )
+        parser.add_argument(
+            '--include-withdrawals',
+            action='store_true',
+            help='Include passbook entries linked to withdrawals when backfilling (NOT recommended; may double count).',
+        )
+        parser.add_argument(
+            '--include-loan-section',
+            action='store_true',
+            help='Include passbook entries in the loan section when backfilling.',
+        )
+        parser.add_argument(
+            '--backfill-sacco-transactions-from-loans',
+            action='store_true',
+            help='Create missing SACCO finance transactions for loan disbursements.',
+        )
+        parser.add_argument(
+            '--backfill-sacco-transactions-from-loan-payments',
+            action='store_true',
+            help='Create missing SACCO finance transactions for loan repayments.',
+        )
+        parser.add_argument(
+            '--backfill-sacco-transactions-from-withdrawals',
+            action='store_true',
+            help='Create missing SACCO finance transactions for withdrawals (approved/disbursed).',
+        )
 
     @transaction.atomic
     def handle(self, *args, **options):
@@ -29,10 +60,20 @@ class Command(BaseCommand):
         section_id = options.get('section_id')
         skip_passbooks = bool(options.get('skip_passbooks'))
         skip_sacco_accounts = bool(options.get('skip_sacco_accounts'))
+        backfill_sacco_transactions_from_passbooks = bool(options.get('backfill_sacco_transactions_from_passbooks'))
+        include_withdrawals = bool(options.get('include_withdrawals'))
+        include_loan_section = bool(options.get('include_loan_section'))
+        backfill_sacco_transactions_from_loans = bool(options.get('backfill_sacco_transactions_from_loans'))
+        backfill_sacco_transactions_from_loan_payments = bool(options.get('backfill_sacco_transactions_from_loan_payments'))
+        backfill_sacco_transactions_from_withdrawals = bool(options.get('backfill_sacco_transactions_from_withdrawals'))
 
         summaries = {
             'apply_changes': apply_changes,
             'passbooks': None,
+            'passbook_to_sacco_transactions': None,
+            'loan_disbursements_to_sacco_transactions': None,
+            'loan_payments_to_sacco_transactions': None,
+            'withdrawals_to_sacco_transactions': None,
             'sacco_accounts': None,
         }
 
@@ -43,6 +84,38 @@ class Command(BaseCommand):
                 member_id=member_id,
                 passbook_id=passbook_id,
                 section_id=section_id,
+            )
+
+        if backfill_sacco_transactions_from_passbooks:
+            summaries['passbook_to_sacco_transactions'] = self._backfill_sacco_transactions_from_passbooks(
+                apply_changes=apply_changes,
+                sacco_id=sacco_id,
+                member_id=member_id,
+                passbook_id=passbook_id,
+                section_id=section_id,
+                include_withdrawals=include_withdrawals,
+                include_loan_section=include_loan_section,
+            )
+
+        if backfill_sacco_transactions_from_loans:
+            summaries['loan_disbursements_to_sacco_transactions'] = self._backfill_sacco_transactions_from_loans(
+                apply_changes=apply_changes,
+                sacco_id=sacco_id,
+                member_id=member_id,
+            )
+
+        if backfill_sacco_transactions_from_loan_payments:
+            summaries['loan_payments_to_sacco_transactions'] = self._backfill_sacco_transactions_from_loan_payments(
+                apply_changes=apply_changes,
+                sacco_id=sacco_id,
+                member_id=member_id,
+            )
+
+        if backfill_sacco_transactions_from_withdrawals:
+            summaries['withdrawals_to_sacco_transactions'] = self._backfill_sacco_transactions_from_withdrawals(
+                apply_changes=apply_changes,
+                sacco_id=sacco_id,
+                member_id=member_id,
             )
 
         if not skip_sacco_accounts:
@@ -58,6 +131,282 @@ class Command(BaseCommand):
 
         for key, value in summaries.items():
             self.stdout.write(f"- {key}: {value}")
+
+    def _backfill_sacco_transactions_from_passbooks(
+        self,
+        *,
+        apply_changes,
+        sacco_id,
+        member_id,
+        passbook_id,
+        section_id,
+        include_withdrawals,
+        include_loan_section,
+    ):
+        from saccos.models import PassbookEntry, WithdrawalAllocation
+        from finance.models import Transaction
+
+        supported_section_types = {
+            'savings': PaymentCategory.SACCO_SAVINGS,
+            'welfare': PaymentCategory.SACCO_WELFARE,
+            'development': PaymentCategory.SACCO_DEVELOPMENT,
+            'emergency': PaymentCategory.SACCO_EMERGENCY,
+            'interest': PaymentCategory.SACCO_LOAN_REPAYMENT,
+        }
+        if include_loan_section:
+            supported_section_types['loan'] = PaymentCategory.SACCO_LOAN_REPAYMENT
+
+        qs = PassbookEntry.objects.select_related('passbook', 'passbook__member', 'passbook__sacco', 'section')
+
+        if sacco_id:
+            qs = qs.filter(passbook__sacco_id=sacco_id)
+        if member_id:
+            qs = qs.filter(passbook__member_id=member_id)
+        if passbook_id:
+            qs = qs.filter(passbook_id=passbook_id)
+        if section_id:
+            qs = qs.filter(section_id=section_id)
+
+        qs = qs.filter(meeting__isnull=True)
+
+        qs = qs.filter(sacco_transaction__isnull=True)
+
+        qs = qs.filter(treasury_opt_out=False)
+
+        qs = qs.filter(section__section_type__in=list(supported_section_types.keys()))
+
+        withdrawal_entry_ids = set()
+        if not include_withdrawals:
+            withdrawal_allocations = WithdrawalAllocation.objects.exclude(passbook_entry_id__isnull=True)
+            if sacco_id:
+                withdrawal_allocations = withdrawal_allocations.filter(withdrawal__sacco_id=sacco_id)
+            if member_id:
+                withdrawal_allocations = withdrawal_allocations.filter(withdrawal__member_id=member_id)
+
+            withdrawal_entry_ids = set(withdrawal_allocations.values_list('passbook_entry_id', flat=True))
+            if withdrawal_entry_ids:
+                qs = qs.exclude(id__in=withdrawal_entry_ids)
+
+        totals = {
+            'entries_considered': qs.count(),
+            'entries_skipped_withdrawals': len(withdrawal_entry_ids) if not include_withdrawals else 0,
+            'transactions_linked_existing': 0,
+            'transactions_created': 0,
+        }
+
+        for entry in qs.iterator(chunk_size=500):
+            sacco = entry.passbook.sacco
+            sacco_account = sacco.get_or_create_account()
+
+            category = supported_section_types.get(entry.section.section_type)
+            if not category:
+                continue
+
+            txn_type = TransactionType.INCOME
+            if entry.transaction_type == 'debit':
+                txn_type = TransactionType.EXPENSE
+
+            marker = f"PassbookEntry#{entry.id}"
+            existing = Transaction.objects.filter(
+                account=sacco_account.account,
+                description__contains=marker,
+            ).order_by('-created_at')
+
+            if existing.exists():
+                txn = existing.first()
+                totals['transactions_linked_existing'] += 1
+                if apply_changes:
+                    entry.sacco_transaction = txn
+                    entry.save(update_fields=['sacco_transaction'])
+                continue
+
+            if not apply_changes:
+                totals['transactions_created'] += 1
+                continue
+
+            txn = SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=txn_type,
+                amount=entry.amount,
+                category=category,
+                description=(
+                    f"Passbook sync - {marker} - {entry.passbook.member.member_number} - "
+                    f"{entry.section.name}: {entry.description}"
+                ),
+                date=entry.transaction_date,
+                recorded_by=entry.recorded_by,
+                is_automated=False,
+            )
+            entry.sacco_transaction = txn
+            entry.save(update_fields=['sacco_transaction'])
+            totals['transactions_created'] += 1
+
+        return totals
+
+    def _backfill_sacco_transactions_from_loans(self, *, apply_changes, sacco_id, member_id):
+        from finance.models import Transaction
+        from saccos.models import SaccoLoan
+
+        qs = SaccoLoan.objects.select_related('sacco', 'member', 'approved_by')
+        if sacco_id:
+            qs = qs.filter(sacco_id=sacco_id)
+        if member_id:
+            qs = qs.filter(member_id=member_id)
+
+        qs = qs.exclude(status__in=['pending', 'rejected'])
+        qs = qs.exclude(disbursement_date__isnull=True)
+
+        totals = {
+            'loans_considered': qs.count(),
+            'transactions_created': 0,
+            'transactions_skipped_existing': 0,
+        }
+
+        for loan in qs.iterator(chunk_size=200):
+            sacco_account = loan.sacco.get_or_create_account()
+            marker = f"SaccoLoan#{loan.id}"
+
+            exists = Transaction.objects.filter(
+                account=sacco_account.account,
+                category=PaymentCategory.SACCO_LOAN_DISBURSEMENT,
+            ).filter(
+                description__contains=marker,
+            ).exists()
+            if not exists:
+                exists = Transaction.objects.filter(
+                    account=sacco_account.account,
+                    category=PaymentCategory.SACCO_LOAN_DISBURSEMENT,
+                    description__icontains=loan.loan_number,
+                ).exists()
+
+            if exists:
+                totals['transactions_skipped_existing'] += 1
+                continue
+
+            totals['transactions_created'] += 1
+            if not apply_changes:
+                continue
+
+            SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=TransactionType.EXPENSE,
+                amount=loan.principal_amount,
+                category=PaymentCategory.SACCO_LOAN_DISBURSEMENT,
+                description=f"Loan disbursement - {marker} - {loan.loan_number} ({loan.member.member_number})",
+                date=loan.disbursement_date,
+                related_loan=loan,
+                recorded_by=loan.approved_by,
+                is_automated=True,
+            )
+
+        return totals
+
+    def _backfill_sacco_transactions_from_loan_payments(self, *, apply_changes, sacco_id, member_id):
+        from finance.models import Transaction
+        from saccos.models import LoanPayment
+
+        qs = LoanPayment.objects.select_related('loan', 'loan__sacco', 'loan__member', 'recorded_by')
+        if sacco_id:
+            qs = qs.filter(loan__sacco_id=sacco_id)
+        if member_id:
+            qs = qs.filter(loan__member_id=member_id)
+
+        totals = {
+            'payments_considered': qs.count(),
+            'transactions_created': 0,
+            'transactions_skipped_existing': 0,
+        }
+
+        for payment in qs.iterator(chunk_size=500):
+            loan = payment.loan
+            sacco_account = loan.sacco.get_or_create_account()
+            marker = f"LoanPayment#{payment.id}"
+
+            exists = Transaction.objects.filter(
+                account=sacco_account.account,
+                category=PaymentCategory.SACCO_LOAN_REPAYMENT,
+            ).filter(
+                description__contains=marker,
+            ).exists()
+            if not exists:
+                exists = Transaction.objects.filter(
+                    account=sacco_account.account,
+                    category=PaymentCategory.SACCO_LOAN_REPAYMENT,
+                    description__icontains=loan.loan_number,
+                    amount=payment.total_amount,
+                    date=payment.payment_date,
+                ).exists()
+
+            if exists:
+                totals['transactions_skipped_existing'] += 1
+                continue
+
+            totals['transactions_created'] += 1
+            if not apply_changes:
+                continue
+
+            SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=TransactionType.INCOME,
+                amount=payment.total_amount,
+                category=PaymentCategory.SACCO_LOAN_REPAYMENT,
+                description=f"Loan repayment - {marker} - {loan.loan_number} ({loan.member.member_number})",
+                date=payment.payment_date,
+                related_loan=loan,
+                recorded_by=payment.recorded_by,
+                is_automated=True,
+            )
+
+        return totals
+
+    def _backfill_sacco_transactions_from_withdrawals(self, *, apply_changes, sacco_id, member_id):
+        from finance.models import Transaction
+        from saccos.models import SaccoWithdrawal
+
+        qs = SaccoWithdrawal.objects.select_related('sacco', 'member', 'approved_by')
+        if sacco_id:
+            qs = qs.filter(sacco_id=sacco_id)
+        if member_id:
+            qs = qs.filter(member_id=member_id)
+
+        qs = qs.exclude(status__in=['pending', 'rejected'])
+
+        totals = {
+            'withdrawals_considered': qs.count(),
+            'transactions_created': 0,
+            'transactions_skipped_existing': 0,
+        }
+
+        for withdrawal in qs.iterator(chunk_size=200):
+            sacco_account = withdrawal.sacco.get_or_create_account()
+
+            exists = Transaction.objects.filter(
+                account=sacco_account.account,
+                category=PaymentCategory.SACCO_WITHDRAWAL,
+                description__icontains=withdrawal.withdrawal_number,
+            ).exists()
+
+            if exists:
+                totals['transactions_skipped_existing'] += 1
+                continue
+
+            totals['transactions_created'] += 1
+            if not apply_changes:
+                continue
+
+            date = withdrawal.disbursement_date or withdrawal.approval_date or withdrawal.request_date
+            SaccoAccountService.record_transaction(
+                sacco_account=sacco_account,
+                transaction_type=TransactionType.EXPENSE,
+                amount=withdrawal.amount,
+                category=PaymentCategory.SACCO_WITHDRAWAL,
+                description=f"Withdrawal - {withdrawal.withdrawal_number} ({withdrawal.member.member_number})",
+                date=date,
+                recorded_by=withdrawal.approved_by,
+                is_automated=True,
+            )
+
+        return totals
 
     def _audit_and_fix_passbooks(self, *, apply_changes, sacco_id, member_id, passbook_id, section_id):
         from saccos.models import MemberPassbook, PassbookEntry

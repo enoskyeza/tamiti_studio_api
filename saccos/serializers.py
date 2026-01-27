@@ -209,6 +209,7 @@ class PassbookEntrySerializer(serializers.ModelSerializer):
     recorded_by_name = serializers.CharField(source='recorded_by.get_full_name', read_only=True)
     member_number = serializers.CharField(source='passbook.member.member_number', read_only=True)
     member_name = serializers.CharField(source='passbook.member.user.get_full_name', read_only=True)
+    affects_treasury = serializers.BooleanField(write_only=True, required=False)
     
     class Meta:
         model = PassbookEntry
@@ -218,6 +219,7 @@ class PassbookEntrySerializer(serializers.ModelSerializer):
             'description', 'reference_number', 'meeting', 'week_number',
             'recorded_by', 'recorded_by_name', 'member_number', 'member_name',
             'is_reversal', 'reverses_entry',
+            'affects_treasury',
             'created_at', 'updated_at'
         ]
         read_only_fields = [

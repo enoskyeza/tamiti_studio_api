@@ -461,6 +461,16 @@ class PassbookEntry(BaseModel):
         help_text="Link to the weekly meeting where this transaction occurred"
     )
     week_number = models.PositiveIntegerField(null=True, blank=True)
+
+    sacco_transaction = models.OneToOneField(
+        'finance.Transaction',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='passbook_entry',
+    )
+
+    treasury_opt_out = models.BooleanField(default=False)
     
     # Reversal Support
     is_reversal = models.BooleanField(default=False)

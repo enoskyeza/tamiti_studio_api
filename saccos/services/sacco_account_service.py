@@ -105,7 +105,8 @@ class SaccoAccountService:
         date=None,
         related_meeting=None,
         related_loan=None,
-        recorded_by=None
+        recorded_by=None,
+        is_automated=True
     ):
         """
         Record a transaction in the SACCO account
@@ -135,7 +136,7 @@ class SaccoAccountService:
             account=sacco_account.account,
             category=category,
             date=date,
-            is_automated=True
+            is_automated=is_automated
         )
         
         # Store related objects in description if needed
