@@ -2,9 +2,13 @@ from rest_framework import viewsets, status
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
+from django.db import transaction
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from django.contrib.auth import get_user_model
 from core.api import AppContextLoggingPermission
+from common.enums import TransactionType, PaymentCategory
 from .models import (
     SaccoOrganization, SaccoMember, MemberPassbook,
     PassbookSection, PassbookEntry, DeductionRule,
@@ -27,6 +31,7 @@ from .serializers import (
 )
 from .services.passbook_service import PassbookService
 from .services.cash_round_service import CashRoundService
+from .services.sacco_account_service import SaccoAccountService
 
 
 class SaccoScopedMixin:
@@ -438,20 +443,71 @@ class PassbookEntryViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Record entry using PassbookService"""
         data = serializer.validated_data
-        
-        entry = PassbookService.record_entry(
-            passbook=data['passbook'],
-            section=data['section'],
-            amount=data['amount'],
-            transaction_type=data['transaction_type'],
-            description=data['description'],
-            recorded_by=self.request.user,
-            transaction_date=data.get('transaction_date'),
-            reference_number=data.get('reference_number', ''),
-            week_number=data.get('week_number'),
-            meeting=data.get('meeting')  # Pass meeting field
-        )
-        
+
+        meeting = data.get('meeting')
+
+        affects_treasury_provided = 'affects_treasury' in data
+        affects_treasury = bool(data.get('affects_treasury')) if affects_treasury_provided else True
+
+        section_type = getattr(data['section'], 'section_type', None)
+        supported_section_types = {
+            'savings': PaymentCategory.SACCO_SAVINGS,
+            'welfare': PaymentCategory.SACCO_WELFARE,
+            'development': PaymentCategory.SACCO_DEVELOPMENT,
+            'emergency': PaymentCategory.SACCO_EMERGENCY,
+            'interest': PaymentCategory.SACCO_LOAN_REPAYMENT,
+        }
+
+        if meeting:
+            if affects_treasury_provided and affects_treasury:
+                raise ValidationError({'affects_treasury': 'Meeting-linked entries cannot affect the SACCO treasury.'})
+            affects_treasury = False
+
+        if section_type not in supported_section_types:
+            if affects_treasury_provided and affects_treasury:
+                raise ValidationError({'affects_treasury': f"Unsupported section type for treasury sync: {section_type}"})
+            affects_treasury = False
+
+        with transaction.atomic():
+            entry = PassbookService.record_entry(
+                passbook=data['passbook'],
+                section=data['section'],
+                amount=data['amount'],
+                transaction_type=data['transaction_type'],
+                description=data['description'],
+                recorded_by=self.request.user,
+                transaction_date=data.get('transaction_date'),
+                reference_number=data.get('reference_number', ''),
+                week_number=data.get('week_number'),
+                meeting=meeting,
+                treasury_opt_out=(not affects_treasury),
+            )
+
+            if affects_treasury and not entry.sacco_transaction:
+                section_type = entry.section.section_type
+                category = supported_section_types[section_type]
+
+                sacco = entry.passbook.sacco
+                sacco_account = sacco.get_or_create_account()
+
+                txn_type = TransactionType.INCOME
+                if entry.transaction_type == 'debit':
+                    txn_type = TransactionType.EXPENSE
+
+                txn = SaccoAccountService.record_transaction(
+                    sacco_account=sacco_account,
+                    transaction_type=txn_type,
+                    amount=entry.amount,
+                    category=category,
+                    description=f"Manual passbook adjustment - {entry.passbook.member.member_number} - {entry.section.name}: {entry.description}",
+                    date=entry.transaction_date,
+                    recorded_by=self.request.user,
+                    is_automated=False,
+                )
+
+                entry.sacco_transaction = txn
+                entry.save(update_fields=['sacco_transaction'])
+
         # Return the created entry
         serializer.instance = entry
     
@@ -460,12 +516,41 @@ class PassbookEntryViewSet(SaccoScopedMixin, viewsets.ModelViewSet):
         """Create a reversal entry"""
         entry = self.get_object()
         reason = request.data.get('reason', 'No reason provided')
-        
-        reversal = PassbookService.reverse_entry(
-            entry=entry,
-            recorded_by=request.user,
-            reason=reason
-        )
+
+        with transaction.atomic():
+            reversal = PassbookService.reverse_entry(
+                entry=entry,
+                recorded_by=request.user,
+                reason=reason
+            )
+
+            reversal.treasury_opt_out = bool(getattr(entry, 'treasury_opt_out', False) or entry.meeting_id)
+            if entry.meeting_id:
+                reversal.meeting_id = entry.meeting_id
+                reversal.week_number = entry.week_number
+            reversal.save(update_fields=['treasury_opt_out', 'meeting', 'week_number'])
+
+            if entry.sacco_transaction and not reversal.sacco_transaction:
+                sacco = entry.passbook.sacco
+                sacco_account = sacco.get_or_create_account()
+
+                txn_type = TransactionType.EXPENSE
+                if entry.sacco_transaction.type == TransactionType.EXPENSE:
+                    txn_type = TransactionType.INCOME
+
+                txn = SaccoAccountService.record_transaction(
+                    sacco_account=sacco_account,
+                    transaction_type=txn_type,
+                    amount=entry.amount,
+                    category=entry.sacco_transaction.category,
+                    description=f"REVERSAL: {reason} (Original: {entry.description})",
+                    date=reversal.transaction_date or timezone.now().date(),
+                    recorded_by=request.user,
+                    is_automated=False,
+                )
+
+                reversal.sacco_transaction = txn
+                reversal.save(update_fields=['sacco_transaction'])
         
         serializer = self.get_serializer(reversal)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
